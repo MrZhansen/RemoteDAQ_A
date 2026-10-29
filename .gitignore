@@ -1,0 +1,20 @@
+# IAR generated outputs and local debugger sessions
+EWARM/RemoteDAQ_A/
+EWARM/settings/
+*.dep
+*.ewd
+*.o
+*.obj
+*.out
+*.hex
+*.map
+*.pbd
+*.pbi
+*.dni
+*.log
+__pycache__/
+*.py[cod]
+# Local test outputs and backups (source files remain tracked)
+build/
+tmp/
+backups/
