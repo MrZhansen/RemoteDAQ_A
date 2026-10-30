@@ -1,3 +1,44 @@
+# CMD07 hardware acceptance checkpoint — 2026-10-30
+
+CMD07 rectangular-wave frequency control passed real-hardware acceptance on the
+A board for 100 Hz, 1 kHz, 5 kHz and 10 kHz. The control path was Ethernet UDP:
+the test host temporarily used 192.168.1.20:5005 and sent control frames to A at
+192.168.1.10:5006. The only enumerated COM port was COM5, the ST-LINK Virtual
+COM Port; a real CMD06 transmission there produced no response, so it was not
+treated as USART6. The temporary host address was removed after testing and the
+host's original network configuration was retained.
+
+All four valid CMD07 requests produced CRC-correct 12-byte status frames whose
+frequency fields matched the request. Real reads of the current map variables
+confirmed `square_wave_running=1`, `square_wave_last_set_status=0`, success count
+incrementing 1..4, zero command errors and a 108 MHz TIM3 counter clock. TIM3
+PSC/ARR/CCR1 measured 107/9999/5000 for 100 Hz, 107/999/500 for 1 kHz,
+107/199/100 for 5 kHz and 107/99/50 for 10 kHz.
+
+PB4 output was measured physically through the existing PB4-to-CH1/PA0 loopback.
+A real 50-point ADC capture at 200 us/point showed a 10 ms period at 100 Hz and a
+1 ms period at 1 kHz. With acquisition temporarily switched to GEAR2 for a
+20 us/point capture, 5 kHz repeated every ten samples (200 us) and 10 kHz
+repeated every five samples (100 us). The captured logic sequences, raw UDP
+status frames and SWD reads are retained under
+D:/QRS/Project/RemoteDAQ_A/tmp/cmd07_live/.
+
+Invalid 99 Hz and 10001 Hz requests were sent over the real UDP path and were
+rejected without a success status response. The 10 kHz output and running
+acquisition remained unchanged. ADC remained running with zero ADC/HAL/DMA
+errors, and `adc_group_count` continued increasing after the test.
+
+The board was restored to 1000 Hz, GEAR0, default UART transport mode and
+DBGMCU_CR.DBG_SLEEP=0. No firmware download or Flash erase/write occurred.
+No independent oscilloscope or logic analyzer was available, so this checkpoint
+accepts functional frequency and period behavior through the physical loopback;
+it does not claim instrument-grade absolute frequency accuracy or jitter.
+This is A-board CMD07 acceptance only. Real B-board command entry, status parsing
+and frequency display remain to be verified and must not be inferred from the
+PC-host UDP test.
+
+---
+
 # Current checkpoint — formal UDP CMD01 GEAR2 (2026-10-30)
 
 User explicitly approved extending CMD01 to GEAR2 only on qualified, healthy UDP. Implemented using the existing stopped acquisition manager: G2 uses two ADC ranks at 144 cycles and TIM2 PSC107/ARR19; leaving G2 restores both ranks to 480 and G0/G1 timing. UART still rejects G2. Default UART/G0/480 is unchanged. REV_ID policy, 4-us early-read guards, NDTR/TIM5 checks, CRC, mask/DIG layout and success-only SEQ remain unchanged. Network loss/transport exit requests G0/480; acquisition faults stop and latch without automatic retry. Existing offline/finite-UDP experiment ownership remains separate. New Watch permissions are acquisition_udp_gear2_available and acquisition_udp_gear2_active; neither certifies analog accuracy or absolute timing.
