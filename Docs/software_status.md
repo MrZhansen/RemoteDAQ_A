@@ -33,9 +33,17 @@ DBGMCU_CR.DBG_SLEEP=0. No firmware download or Flash erase/write occurred.
 No independent oscilloscope or logic analyzer was available, so this checkpoint
 accepts functional frequency and period behavior through the physical loopback;
 it does not claim instrument-grade absolute frequency accuracy or jitter.
-This is A-board CMD07 acceptance only. Real B-board command entry, status parsing
-and frequency display remain to be verified and must not be inferred from the
-PC-host UDP test.
+
+The real B-board loop was then verified without resetting B. B sent all four
+CMD07 values through its own interface and displayed W=100, 1000, 5000 and
+10000 with the corresponding GEAR. A accepted every control frame, executed the
+requested frequency and returned a status frame; B reported CRC=0 throughout.
+At 1000 Hz/GEAR0 B showed RX about 102 and DROP stable over a 10-second window.
+At 10000 Hz/GEAR2 B showed RX about 1020, W=10000, GEAR=2, CRC=0 and DROP stable
+over a 10-second window. The cumulative DROP increased only while the operator
+repeatedly switched waveform frequencies and GEAR settings; it did not increase
+in either steady-state window. After restoration B showed W=1000, GEAR=0,
+RX about 102, CRC=0 and DROP stable at 429 for 10 seconds.
 
 ---
 
