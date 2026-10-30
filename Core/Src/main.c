@@ -89,6 +89,7 @@ typedef struct
 #define ACQ_SWITCH_ADC_CONFLICT 12U
 #define ACQ_SWITCH_ADC_CYCLES   13U
 #define ACQ_SWITCH_CLEANUP      14U
+#define ACQ_SWITCH_UDP_REQUIRED 15U
 
 /* Sticky application errors; inspect adc_hal_error and dma_error as well. */
 #define ADC_ERROR_NONE          0x00U
@@ -208,6 +209,13 @@ volatile uint32_t acquisition_switching = 0U;
 volatile uint32_t acquisition_fault_latched = 0U;
 volatile uint32_t acquisition_sample_interval_us = 0U;
 volatile uint32_t acquisition_timer_clock_hz = 0U;
+/* Software feature permission, derived from the selected live UDP link.
+ * This is not an ADC accuracy or external timing qualification flag. */
+volatile uint32_t acquisition_udp_gear2_available = 0U;
+volatile uint32_t acquisition_udp_gear2_active = 0U;
+volatile uint32_t acquisition_udp_gear2_return_count = 0U;
+volatile uint32_t acquisition_udp_gear2_fault_count = 0U;
+static uint32_t acquisition_udp_gear2_starting = 0U;
 volatile uint32_t acquisition_tim2_stop_status = ACQ_GEAR_INVALID;
 volatile uint32_t acquisition_adc_stop_status = ACQ_GEAR_INVALID;
 volatile uint32_t acquisition_tim5_stop_status = ACQ_GEAR_INVALID;
@@ -414,6 +422,7 @@ static void CH1_PublishGroup(uint32_t offset);
 static void Full_PublishGroup(uint32_t offset);
 static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t trigger);
 static HAL_StatusTypeDef DigitalCounter_Init(void);
+static void Acquisition_UDPPolicyPoll(void);
 static void CH1_CaptureDebug(volatile CH1_DebugSnapshot *snapshot,
                              uint32_t primask_before);
 
@@ -847,9 +856,10 @@ static void UART6_DispatchControl(const DAQ_ControlCommand *command)
   else if (command->command == DAQ_CMD_SET_GEAR)
   {
     uart6_gear_request_count++;
-    /* Protocol-valid GEAR 2..4 is unsupported by this acquisition firmware.
-     * Never submit it to the hardware manager or disturb a pending request. */
-    if (command->parameter > 1U)
+    /* GEAR2 is a UDP-only feature. GEAR3/4 remain protocol-valid but
+     * unsupported; UART never submits a 50 ksample/s request. */
+    if ((command->parameter > 2U) ||
+        ((command->parameter == 2U) && (acquisition_udp_gear2_available == 0U)))
     {
       uart6_control_unsupported_count++;
       uart6_gear_unsupported_count++;
@@ -1182,13 +1192,16 @@ static HAL_StatusTypeDef Acquisition_ApplyConfiguration(uint32_t gear, uint32_t 
   uint32_t old_errors;
   HAL_StatusTypeDef status;
   const DigitalSyncTimingConfig *timing = DigitalSync_GetTimingConfigForADC(gear, sample_cycles);
-  /* Only the internal offline state may select the candidate 20 us profile.
-   * Production request/configuration lookups still support GEAR0/1 only. */
+  /* The existing stopped reconfiguration is shared by isolated experiments
+   * and the UDP-only production request. No UART path can arm GEAR2. */
   if ((gear == 2U) && (sample_cycles == 144U))
   {
     if (offline.state == OFFLINE_STARTING)
     { timing = DigitalSync_GetOfflineTimingConfig(); }
     else if (udp_trial.state == UDP_TRIAL_STARTING)
+    { timing = DigitalSync_GetUDPCandidateTimingConfig(); }
+    else if ((acquisition_udp_gear2_starting != 0U) &&
+             (acquisition_udp_gear2_available != 0U))
     { timing = DigitalSync_GetUDPCandidateTimingConfig(); }
   }
   if (timing == NULL) { return HAL_ERROR; }
@@ -1327,6 +1340,8 @@ static HAL_StatusTypeDef Acquisition_ApplyGear(uint32_t gear)
 {
   uint32_t cycles = acquisition_adc_active_cycles;
   if (cycles == ACQ_GEAR_INVALID) { cycles = 480U; }
+  if (gear == 2U) { cycles = 144U; }
+  else if (acquisition_udp_gear2_active != 0U) { cycles = 480U; }
   return Acquisition_ApplyConfiguration(gear, cycles);
 }
 
@@ -1336,13 +1351,29 @@ __root HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
   if ((offline.state == OFFLINE_STARTING) || (offline.state == OFFLINE_RUNNING) ||
       (offline.state == OFFLINE_RESTORING) || (offline.state == OFFLINE_FAULT))
   { return HAL_BUSY; }
-  if (gear > 1U)
+  if (gear > 2U)
   {
     acquisition_last_switch_result = ACQ_SWITCH_BAD_GEAR;
     acquisition_switch_fail_count++;
     return HAL_ERROR;
   }
-  if ((gear == 1U) && ((acquisition_adc_active_cycles == 144U) ||
+  if ((gear == 2U) && (acquisition_udp_gear2_available == 0U))
+  {
+    acquisition_last_switch_result = ACQ_SWITCH_UDP_REQUIRED;
+    acquisition_switch_fail_count++;
+    return HAL_ERROR;
+  }
+  if ((gear == 2U) && (acquisition_udp_gear2_active == 0U) &&
+      ((acquisition_adc_active_cycles != 480U) ||
+       (acquisition_adc_requested_cycles != 480U) ||
+       (acquisition_adc_request_pending != 0U)))
+  {
+    acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
+    acquisition_switch_fail_count++;
+    return HAL_ERROR;
+  }
+  if ((gear == 1U) && (acquisition_udp_gear2_active == 0U) &&
+      ((acquisition_adc_active_cycles == 144U) ||
       ((acquisition_adc_request_pending != 0U) && (acquisition_adc_requested_cycles == 144U))))
   {
     acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
@@ -1360,6 +1391,8 @@ __root HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
 __root HAL_StatusTypeDef Acquisition_RequestADCSampling(uint32_t sample_cycles)
 {
   if (UDP_TRIAL_OWNS(udp_trial.state)) { return HAL_BUSY; }
+  if ((acquisition_udp_gear2_active != 0U) ||
+      (acquisition_udp_gear2_starting != 0U)) { return HAL_BUSY; }
   if ((offline.state == OFFLINE_STARTING) || (offline.state == OFFLINE_RUNNING) ||
       (offline.state == OFFLINE_RESTORING) || (offline.state == OFFLINE_FAULT))
   { return HAL_BUSY; }
@@ -1384,6 +1417,8 @@ __root HAL_StatusTypeDef Acquisition_RequestADCSampling(uint32_t sample_cycles)
 
 static void Acquisition_ADCSamplingPoll(void)
 {
+  if ((acquisition_udp_gear2_active != 0U) ||
+      (acquisition_udp_gear2_starting != 0U)) { return; }
   uint32_t request = acquisition_adc_requested_cycles;
   if ((request == acquisition_adc_last_request) && (acquisition_adc_request_pending == 0U))
   { return; }
@@ -1426,6 +1461,8 @@ static void Acquisition_ADCSamplingPoll(void)
 static void Acquisition_GearPoll(void)
 {
   uint32_t request;
+  uint32_t leaving_udp_gear2;
+  HAL_StatusTypeDef status;
   if (UDP_TRIAL_OWNS(udp_trial.state)) { return; }
   Acquisition_ADCSamplingPoll();
   request = acquisition_requested_gear;
@@ -1433,11 +1470,26 @@ static void Acquisition_GearPoll(void)
   { return; }
   acquisition_last_request = request;
   acquisition_request_pending = 0U;
-  if (request > 1U)
+  if (request > 2U)
   {
     acquisition_last_switch_result = ACQ_SWITCH_BAD_GEAR;
     acquisition_switch_fail_count++;
     return; /* Invalid requests must not interrupt healthy acquisition. */
+  }
+  if ((request == 2U) && (acquisition_udp_gear2_available == 0U))
+  {
+    acquisition_last_switch_result = ACQ_SWITCH_UDP_REQUIRED;
+    acquisition_switch_fail_count++;
+    return;
+  }
+  if ((request == 2U) && (acquisition_udp_gear2_active == 0U) &&
+      ((acquisition_adc_active_cycles != 480U) ||
+       (acquisition_adc_requested_cycles != 480U) ||
+       (acquisition_adc_request_pending != 0U)))
+  {
+    acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
+    acquisition_switch_fail_count++;
+    return;
   }
   if ((acquisition_fault_latched != 0U) || (adc_error != 0U) ||
       (dma_error != 0U) || (digital_sync.error != 0U))
@@ -1446,7 +1498,8 @@ static void Acquisition_GearPoll(void)
     acquisition_switch_fail_count++;
     return;
   }
-  if ((request == 1U) && (acquisition_adc_active_cycles == 144U))
+  if ((request == 1U) && (acquisition_udp_gear2_active == 0U) &&
+      (acquisition_adc_active_cycles == 144U))
   {
     acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
     acquisition_switch_fail_count++;
@@ -1454,8 +1507,71 @@ static void Acquisition_GearPoll(void)
   }
   if ((request == acquisition_active_gear) && (adc_running != 0U))
   { acquisition_last_switch_result = ACQ_SWITCH_OK; return; }
-  if (Acquisition_ApplyGear(request) == HAL_OK) { acquisition_switch_ok_count++; }
-  else { acquisition_switch_fail_count++; }
+  leaving_udp_gear2 = acquisition_udp_gear2_active;
+  acquisition_udp_gear2_starting = (request == 2U) ? 1U : 0U;
+  status = Acquisition_ApplyGear(request);
+  acquisition_udp_gear2_starting = 0U;
+  if (status == HAL_OK)
+  {
+    acquisition_udp_gear2_active = (request == 2U) ? 1U : 0U;
+    if ((leaving_udp_gear2 != 0U) && (request != 2U))
+    {
+      acquisition_adc_requested_cycles = 480U;
+      acquisition_adc_last_request = 480U;
+      acquisition_adc_request_pending = 0U;
+    }
+    acquisition_switch_ok_count++;
+  }
+  else
+  {
+    acquisition_udp_gear2_active = 0U;
+    acquisition_switch_fail_count++;
+  }
+}
+
+/* Main only. Refresh before gear execution and after network polling. Link
+ * failure requests a safe G0/480 return before any UART transport change.
+ * A sampling fault is stopped/latched, never hidden by automatic restart. */
+static void Acquisition_UDPPolicyPoll(void)
+{
+  uint32_t available = ((daq_transport_active == 1U) &&
+      (daq_transport_request == 1U) && (DAQ_NetReady() != 0U) &&
+      (daq_net.identity_status == (uint32_t)DAQ_NET_ID_ES0290_LISTED) &&
+      (adc_running != 0U) && (acquisition_fault_latched == 0U) &&
+      (adc_error == 0U) && (adc_hal_error == 0U) && (dma_error == 0U) &&
+      (digital_sync.error == 0U)) ? 1U : 0U;
+  if ((available != 0U) && (acquisition_requested_gear == 2U) &&
+      (acquisition_udp_gear2_active == 0U))
+  {
+    /* Same entry clock constraints as the already exercised UDP trial;
+     * do not repeat the relatively expensive RCC queries at 50 kHz. */
+    if ((SystemCoreClock != 216000000U) ||
+        (HAL_RCC_GetHCLKFreq() != 216000000U) ||
+        (HAL_RCC_GetPCLK1Freq() != 54000000U) ||
+        (HAL_RCC_GetPCLK2Freq() != 108000000U) ||
+        ((RCC->DCKCFGR1 & RCC_DCKCFGR1_TIMPRE) != 0U) ||
+        ((ADC->CCR & ADC_CCR_ADCPRE) != ADC_CLOCK_SYNC_PCLK_DIV4) ||
+        ((DWT->CTRL & DWT_CTRL_CYCCNTENA_Msk) == 0U)) { available = 0U; }
+  }
+  acquisition_udp_gear2_available = available;
+  if (acquisition_udp_gear2_active == 0U) { return; }
+  if ((adc_running == 0U) || (acquisition_fault_latched != 0U) ||
+      (adc_error != 0U) || (adc_hal_error != 0U) ||
+      (dma_error != 0U) || (digital_sync.error != 0U))
+  {
+    acquisition_udp_gear2_active = 0U;
+    acquisition_udp_gear2_available = 0U;
+    acquisition_udp_gear2_fault_count++;
+    (void)Acquisition_Fail(ACQ_SWITCH_LATCHED);
+    return;
+  }
+  if ((available == 0U) && ((acquisition_requested_gear != 0U) ||
+                           (acquisition_request_pending == 0U)))
+  {
+    acquisition_requested_gear = 0U;
+    acquisition_request_pending = 1U;
+    acquisition_udp_gear2_return_count++;
+  }
 }
 
 /* Main context, between complete TX calls. RX bytes during isolation are
@@ -1963,7 +2079,9 @@ static void DAQ_UDPTrialPoll(void)
 static uint32_t DAQ_TransportGetStatus(DAQ_StatusState *state)
 {
   if (acquisition_active_gear != 2U) { return UART6_GetStatus(state); }
-  if ((udp_trial.state != UDP_TRIAL_RUNNING) || (daq_transport_active != 1U) ||
+  if (((udp_trial.state != UDP_TRIAL_RUNNING) &&
+       (acquisition_udp_gear2_active == 0U)) || (daq_transport_active != 1U) ||
+      (acquisition_adc_active_cycles != 144U) ||
       (adc_running == 0U) || (acquisition_fault_latched != 0U) ||
       (adc_error != 0U) || (dma_error != 0U) || (digital_sync.error != 0U) ||
       (square_wave_running == 0U) || (square_wave_actual_hz < 100U) ||
@@ -2017,6 +2135,7 @@ static uint32_t DAQ_TransportPoll(void)
   }
   if (daq_transport_active == 0U) { return 0U; }
   work = DAQ_NetPoll();
+  Acquisition_UDPPolicyPoll();
   /* At most one command per service iteration; no command executes in ISR. */
   if (DAQ_NetTakeControl(&command) != 0U)
   { UART6_DispatchControl(&command); work = 1U; }
@@ -2158,6 +2277,7 @@ int main(void)
       adc_error_count++;
     }
     __set_PRIMASK(primask);
+    Acquisition_UDPPolicyPoll();
     Acquisition_GearPoll();
     CH1_BackgroundPoll();
     if ((DAQ_TransportPoll() == 0U) &&

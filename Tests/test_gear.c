@@ -246,6 +246,9 @@ static void setup(void)
   acquisition_active_gear=ACQ_GEAR_INVALID; acquisition_requested_gear=0U;
   acquisition_request_pending=0U; acquisition_last_request=0U;
   acquisition_fault_latched=0U; acquisition_switching=0U;
+  acquisition_udp_gear2_available=0U; acquisition_udp_gear2_active=0U;
+  acquisition_udp_gear2_starting=0U;
+  acquisition_udp_gear2_return_count=0U; acquisition_udp_gear2_fault_count=0U;
   acquisition_switch_ok_count=0U; acquisition_switch_fail_count=0U;
   acquisition_last_switch_result=ACQ_GEAR_INVALID;
   acquisition_adc_active_cycles=ACQ_GEAR_INVALID; acquisition_adc_requested_cycles=480U;

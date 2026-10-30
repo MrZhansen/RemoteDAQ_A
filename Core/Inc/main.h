@@ -101,7 +101,8 @@ extern volatile DigitalSyncTimingDiagnostics digital_timing;
 extern volatile uint32_t acquisition_active_gear;
 void Acquisition_TIM2Update(uint32_t irq_entry_phase);
 /* Main-context request only; execution occurs in the acquisition service.
- * Accepts GEAR 0/1. This is not a UART command receiver. */
+ * GEAR 0/1 on either transport; GEAR2 only under the live UDP policy.
+ * This is not a UART command receiver. */
 HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear);
 /* Main-context request: 480 for normal mode; 144 only while GEAR0 is active
  * and no GEAR1 request is pending. Hardware changes run in the service. */

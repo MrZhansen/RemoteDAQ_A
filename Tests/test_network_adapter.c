@@ -168,6 +168,22 @@ int main(int argc,char **argv)
     printf("PASS RX bounded %s rejection: %lu checks\n",mode,(unsigned long)checks); return 0;
   }
   Setup();
+  if(strcmp(mode,"poll_ack")==0)
+  {
+    uint32_t unavailable=ETH_DMASR_TBUS|ETH_DMASR_RBUS, acknowledge;
+    test_eth.DMASR=unavailable;
+    Poll();
+    /* This fixture captures the W1C write mask, not register hardware.
+     * Emulate that write separately: unavailable flags must survive until
+     * the HAL rearms descriptors and issues the appropriate poll demand. */
+    acknowledge=test_eth.DMASR;
+    CHECK((acknowledge & unavailable)==0U);
+    CHECK(acknowledge==(ETH_DMASR_NIS|ETH_DMASR_AIS|ETH_DMASR_RS|ETH_DMASR_TS));
+    CHECK((unavailable & ~acknowledge)==unavailable);
+    CHECK(daq_net.fault==0U && daq_net.tx_stall_count==0U);
+    printf("PASS poll W1C preserves HAL DMA-resume flags: %lu checks; simulated register semantics\n",(unsigned long)checks);
+    return 0;
+  }
   Control(control,DAQ_CMD_REQUEST_STATUS,0U); Wire(wire,control);
   if(strcmp(mode,"padding")==0)
   {

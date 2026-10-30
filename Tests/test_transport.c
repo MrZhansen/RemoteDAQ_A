@@ -17,6 +17,15 @@ uint32_t DAQ_NetSetEnabled(uint32_t enabled)
   net_enable=enabled; return 1U; }
 uint32_t DAQ_NetPoll(void) { CHECK(net_enable==1U); return 0U; }
 uint32_t DAQ_NetReady(void) { return net_enable && net_ready; }
+/* Acquisition hardware is already a stand-in in this transport fixture.
+ * test_remote_gear2.c executes the actual production policy and HAL manager. */
+static void Acquisition_UDPPolicyPoll(void)
+{
+  acquisition_udp_gear2_available=(daq_transport_active==1U &&
+      daq_transport_request==1U && DAQ_NetReady())?1U:0U;
+  if(acquisition_udp_gear2_active && !acquisition_udp_gear2_available)
+  { acquisition_requested_gear=0U; acquisition_request_pending=1U; }
+}
 uint32_t DAQ_NetTakeControl(DAQ_ControlCommand *command)
 {
   if (!pending_command) { return 0U; }
@@ -75,19 +84,20 @@ int TRANSPORT_TEST_MAIN(void)
   CHECK(acquisition_active_gear==0U && acquisition_request_pending==1U && udp_status==calls);
   Acquisition_GearPoll(); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==1U && udp_last[3]==1U && udp_status==calls+1U);
-  Request(1U,2U); (void)DAQ_TransportPoll();
+  Request(1U,3U); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==1U && uart6_gear_unsupported_count>0U);
   Request(1U,0U); (void)DAQ_TransportPoll(); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==0U);
-  /* GEAR2 remains unavailable through CMD01, but an internal candidate
-   * snapshot can be encoded and submitted only through UDP, with real state. */
+  /* Keep exercising the isolated candidate owner separately from remote G2. */
   udp_trial.state=UDP_TRIAL_RUNNING; acquisition_active_gear=2U;
+  acquisition_adc_active_cycles=144U;
   set_group(50U,345U); source.gear=2U; (void)DAQ_TransportPoll();
   CHECK(udp_last[5]==2U && udp_last[6]==1U);
   Request(6U,0U); (void)DAQ_TransportPoll();
   CHECK(udp_last[2]==3U && udp_last[3]==2U);
   CHECK(UART6_GetStatus(&(DAQ_StatusState){0})==0U);
   udp_trial.state=UDP_TRIAL_DONE; acquisition_active_gear=0U; source.gear=0U;
+  acquisition_adc_active_cycles=480U;
   daq_transport_request=0U; seq=ch1_uart_next_seq;
   disable_pending=1U; calls=udp_calls;
   CHECK(DAQ_TransportPoll()==0U && daq_transport_active==1U && uart6_rx_active==0U);

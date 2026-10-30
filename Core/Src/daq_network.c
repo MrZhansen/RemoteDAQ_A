@@ -6,8 +6,17 @@
 #include "lwip/etharp.h"
 #include "lwip/timeouts.h"
 #include "netif/ethernet.h"
+#include "lwip/prot/ethernet.h"
+#include "lwip/prot/ip4.h"
+#include "lwip/prot/udp.h"
+
+/* Checked by the actual target compiler, not only the GCC host tests. */
+typedef char DAQ_EthernetHeaderMustBe14[(sizeof(struct eth_hdr) == 14U) ? 1 : -1];
+typedef char DAQ_IPv4HeaderMustBe20[(sizeof(struct ip_hdr) == 20U) ? 1 : -1];
+typedef char DAQ_UDPHeaderMustBe8[(sizeof(struct udp_hdr) == 8U) ? 1 : -1];
 
 volatile DAQ_NetDiagnostics daq_net;
+const char * volatile daq_net_assert_message;
 static struct netif network_interface;
 static struct udp_pcb *control_pcb;
 static ip_addr_t peer_address;
@@ -17,7 +26,7 @@ static uint32_t control_read, control_write, control_count, arp_tick;
 u32_t sys_now(void) { return DAQ_NetClockMs(); }
 void DAQ_NetAssert(const char *message)
 {
-  (void)message;
+  if (daq_net.assertion_count == 0U) { daq_net_assert_message = message; }
   daq_net.assertion_count++;
   daq_net.fault = 1U;
   daq_net.last_error = 1U;
@@ -80,6 +89,13 @@ uint32_t DAQ_NetSetEnabled(uint32_t enabled)
   {
     daq_net.init_count++;
     lwip_init();
+    if (daq_net.fault != 0U)
+    {
+      /* Our assertion hook returns to protect acquisition. Do not continue
+       * with an invalid stack or configure ETH after an init assertion. */
+      daq_net.init_error_count++;
+      return 0U;
+    }
     SetAddress(&address, DAQ_NET_A_IP);
     SetAddress(&mask, DAQ_NET_NETMASK);
     SetAddress(&gateway, 0,0,0,0);

@@ -58,6 +58,8 @@ static uint32_t acquisition_active_gear=0U, acquisition_switching;
 static uint32_t acquisition_fault_latched, adc_running=1U;
 static uint32_t acquisition_requested_gear, acquisition_request_pending;
 static uint32_t acquisition_last_switch_result, adc_error, dma_error;
+static uint32_t acquisition_udp_gear2_available, acquisition_udp_gear2_active;
+static uint32_t acquisition_adc_active_cycles=480U;
 static uint32_t gear_apply_failure, gear_request_calls;
 static HAL_StatusTypeDef gear_request_status=HAL_OK;
 static HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
@@ -76,6 +78,8 @@ static void Acquisition_GearPoll(void)
   if (gear_apply_failure!=0U)
   { adc_running=0U; acquisition_fault_latched=1U; return; }
   acquisition_active_gear=acquisition_requested_gear;
+  acquisition_udp_gear2_active=(acquisition_active_gear==2U)?1U:0U;
+  acquisition_adc_active_cycles=(acquisition_active_gear==2U)?144U:480U;
   adc_snapshot_valid=0U;
 }
 static struct { uint32_t error; } digital_sync;
@@ -196,6 +200,8 @@ static void drain(void)
 }
 static void reset_control(void)
 {
+  acquisition_udp_gear2_available=0U; acquisition_udp_gear2_active=0U;
+  acquisition_adc_active_cycles=480U;
   memset(&huart6,0,sizeof(huart6)); huart6.Instance=&rx_uart;
   uart6_control_started=0U; uart6_status_pending=0U; uart6_rx_recovery_pending=0U;
   uart6_initialized=1U; dma_init_result=HAL_OK; arm_result=HAL_OK;

@@ -18,7 +18,7 @@ foreach($id in @('0x10010449','0x10000449','0x10020449','0x10010451','0x00000000
   if($LASTEXITCODE -ne 0) { throw "Identity integration failed $id : $LASTEXITCODE" }
 }
 }
-$scenarios=if($AdapterOnly.Count -gt 0) {$AdapterOnly} elseif($ConfirmedInterfaceOnly) {@('rx')} else {@('unowned','duplicate','cycle','rx','rx_fault','tx_release_fault','poll_release_fault','rx_input_fault','send_frames','padding')}
+$scenarios=if($AdapterOnly.Count -gt 0) {$AdapterOnly} elseif($ConfirmedInterfaceOnly) {@('rx')} else {@('unowned','duplicate','cycle','rx','rx_fault','tx_release_fault','poll_release_fault','rx_input_fault','send_frames','padding','poll_ack')}
 foreach($scenario in $scenarios) {
   & $adapter $scenario 2>&1 | ForEach-Object {$_}
   if($LASTEXITCODE -ne 0) { throw "RX integration failed $scenario : $LASTEXITCODE" }

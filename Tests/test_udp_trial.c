@@ -36,7 +36,10 @@ static void trial_restored(void)
   CHECK(adc3.SQR3==(8U<<5U) && digital_sync.error==0U);
   CHECK(full_snapshot_valid==0U && udp_trial.arm==0U && udp_trial.request==0U);
 }
-int main(void)
+#ifndef UDP_TRIAL_TEST_MAIN
+#define UDP_TRIAL_TEST_MAIN main
+#endif
+int UDP_TRIAL_TEST_MAIN(void)
 {
   uint32_t i, mask, seq, configs, uart_calls, group, old;
   uint8_t frame[260],saved[260]; Full_Snapshot snapshot;

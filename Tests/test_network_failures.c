@@ -3,7 +3,14 @@
 #include "test_network.c"
 #undef main
 #include "lwip/udp.h"
-static uint32_t failure_mode, new_calls, bind_calls;
+static uint32_t failure_mode, new_calls, bind_calls, init_assertion;
+extern const char * volatile daq_net_assert_message;
+void __real_lwip_init(void);
+void __wrap_lwip_init(void)
+{
+  __real_lwip_init();
+  if (init_assertion != 0U) { DAQ_NetAssert("injected stack init assertion"); }
+}
 struct udp_pcb *__real_udp_new(void);
 err_t __real_udp_bind(struct udp_pcb *,const ip_addr_t *,u16_t);
 struct udp_pcb *__wrap_udp_new(void)
@@ -28,7 +35,8 @@ int main(int argc,char **argv)
   else if(strcmp(mode,"bind")==0) { failure_mode=2U; }
   else if(strcmp(mode,"init")==0) { init_failure=1U; }
   else if(strcmp(mode,"guard")==0) { init_failure=2U; }
-  if(failure_mode || init_failure)
+  else if(strcmp(mode,"lwip_assert")==0) { init_assertion=1U; }
+  if(failure_mode || init_failure || init_assertion)
   {
     CHECK(DAQ_NetSetEnabled(1U)==0U);
     CHECK(daq_net.fault==1U && daq_net.init_error_count==1U && daq_net.enabled==0U && daq_net.initialized==0U);
@@ -38,6 +46,15 @@ int main(int argc,char **argv)
       udp_remove(probe);
       CHECK(netif_list==NULL && netif_default==NULL);
       CHECK(daq_net.last_error==((failure_mode==1U)?10U:11U));
+    }
+    else if(init_assertion)
+    {
+      CHECK(new_calls==0U && bind_calls==0U && init_calls==0U);
+      CHECK(netif_list==NULL && netif_default==NULL);
+      CHECK(daq_net.last_error==1U && daq_net.assertion_count==1U);
+      CHECK(daq_net_assert_message!=NULL && strcmp(daq_net_assert_message,"injected stack init assertion")==0);
+      DAQ_NetAssert("later assertion");
+      CHECK(daq_net.assertion_count==2U && strcmp(daq_net_assert_message,"injected stack init assertion")==0);
     }
     else
     {

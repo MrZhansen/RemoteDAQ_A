@@ -314,8 +314,10 @@ uint32_t DAQ_EthernetPoll(struct netif *interface)
       }
     }
   }
-  network_eth.Instance->DMASR=ETH_DMASR_NIS|ETH_DMASR_AIS|ETH_DMASR_RS|
-      ETH_DMASR_TS|ETH_DMASR_RBUS|ETH_DMASR_TBUS;
+  /* Leave TBUS/RBUS to the HAL descriptor rearm paths. In particular,
+   * Transmit_IT only issues DMATPDR when TBUS is still asserted; clearing
+   * it here can strand an OWN descriptor while DMA remains suspended. */
+  network_eth.Instance->DMASR=ETH_DMASR_NIS|ETH_DMASR_AIS|ETH_DMASR_RS|ETH_DMASR_TS;
   return work;
 }
 
