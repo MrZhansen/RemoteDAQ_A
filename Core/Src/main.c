@@ -315,6 +315,12 @@ volatile uint32_t square_wave_frequency_hz = 0U;
 volatile uint32_t square_wave_actual_hz = 0U;
 volatile uint32_t square_wave_timer_clock_hz = 0U;
 static uint32_t square_wave_initialized = 0U;
+/* CMD07 diagnostics. Frequencies are requests/results, not Watch controls. */
+volatile uint32_t square_wave_last_request_hz = SQUARE_WAVE_DEFAULT_HZ;
+volatile uint32_t square_wave_last_set_status = 0xFFFFFFFFUL;
+volatile uint32_t square_wave_set_ok_count = 0U;
+volatile uint32_t square_wave_set_error_count = 0U;
+volatile uint32_t square_wave_restore_status = 0xFFFFFFFFUL;
 
 /* USART6 control receive/status state. */
 DMA_HandleTypeDef hdma_usart6_rx;
@@ -423,6 +429,7 @@ static void Full_PublishGroup(uint32_t offset);
 static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t trigger);
 static HAL_StatusTypeDef DigitalCounter_Init(void);
 static void Acquisition_UDPPolicyPoll(void);
+static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz);
 static void CH1_CaptureDebug(volatile CH1_DebugSnapshot *snapshot,
                              uint32_t primask_before);
 
@@ -845,6 +852,12 @@ static void UART6_DispatchControl(const DAQ_ControlCommand *command)
 {
   HAL_StatusTypeDef status;
   if (command->command == DAQ_CMD_REQUEST_STATUS) { UART6_QueueStatus(); }
+  else if (command->command == DAQ_CMD_SET_WAVE_FREQUENCY)
+  {
+    /* UART and UDP both dispatch here in main, between complete TX calls. */
+    if (SquareWave_ChangeFrequency(command->parameter) == HAL_OK)
+    { UART6_QueueStatus(); }
+  }
   else if (command->command == DAQ_CMD_SET_CHANNEL_MASK)
   {
     /* Parser already validated 0..0x1F and PARAM_H/reserved/CRC. This runs
@@ -2660,7 +2673,7 @@ HAL_StatusTypeDef SquareWave_Start(void)
   return status;
 }
 
-/* Retain the stop API for IAR debugger calls before a control path uses it. */
+/* Shared by the CMD07 stop/configure/start sequence. */
 __root HAL_StatusTypeDef SquareWave_Stop(void)
 {
   HAL_StatusTypeDef status;
@@ -2679,6 +2692,52 @@ __root HAL_StatusTypeDef SquareWave_Stop(void)
     square_wave_error |= SQUARE_WAVE_ERROR_STOP;
   }
   return status;
+}
+
+/* Main context only. Validate before stopping a valid output; a HAL failure
+ * gets one bounded attempt to restore the previous running frequency. */
+static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz)
+{
+  uint32_t previous_hz = square_wave_frequency_hz;
+  uint32_t was_running = square_wave_running;
+  HAL_StatusTypeDef status;
+  HAL_StatusTypeDef restore;
+  square_wave_last_request_hz = frequency_hz;
+  square_wave_restore_status = 0xFFFFFFFFUL;
+  if ((frequency_hz < SQUARE_WAVE_MIN_HZ) ||
+      (frequency_hz > SQUARE_WAVE_MAX_HZ))
+  {
+    square_wave_last_set_status = (uint32_t)HAL_ERROR;
+    square_wave_set_error_count++;
+    return HAL_ERROR;
+  }
+  if ((frequency_hz == previous_hz) && (was_running != 0U))
+  {
+    square_wave_last_set_status = (uint32_t)HAL_OK;
+    square_wave_set_ok_count++;
+    return HAL_OK;
+  }
+  status = SquareWave_Stop();
+  if (status == HAL_OK) { status = SquareWave_Init(frequency_hz); }
+  if (status == HAL_OK) { status = SquareWave_Start(); }
+  square_wave_last_set_status = (uint32_t)status;
+  if (status == HAL_OK)
+  {
+    square_wave_set_ok_count++;
+  }
+  else
+  {
+    square_wave_set_error_count++;
+    if ((was_running != 0U) && (square_wave_running == 0U) &&
+        (previous_hz >= SQUARE_WAVE_MIN_HZ) && (previous_hz <= SQUARE_WAVE_MAX_HZ))
+    {
+      restore = SquareWave_Stop();
+      if (restore == HAL_OK) { restore = SquareWave_Init(previous_hz); }
+      if (restore == HAL_OK) { restore = SquareWave_Start(); }
+      square_wave_restore_status = (uint32_t)restore;
+    }
+  }
+  return status; /* A successful rollback does not acknowledge the request. */
 }
 
 /* Read-only, single-pass snapshots: never read ADC DR (which clears EOC),

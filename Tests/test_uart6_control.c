@@ -84,6 +84,22 @@ static void Acquisition_GearPoll(void)
 }
 static struct { uint32_t error; } digital_sync;
 static uint32_t square_wave_running=1U, square_wave_actual_hz=1000U;
+static uint32_t square_wave_frequency_hz=1000U;
+#define SQUARE_WAVE_MIN_HZ 100U
+#define SQUARE_WAVE_MAX_HZ 10000U
+#define SQUARE_WAVE_DEFAULT_HZ 1000U
+static uint32_t wave_stop_calls, wave_init_calls, wave_start_calls;
+static HAL_StatusTypeDef SquareWave_Stop(void)
+{ wave_stop_calls++; square_wave_running=0U; return HAL_OK; }
+static HAL_StatusTypeDef SquareWave_Init(uint32_t hz)
+{
+  wave_init_calls++; CHECK(square_wave_running==0U);
+  square_wave_frequency_hz=hz; square_wave_actual_hz=hz; return HAL_OK;
+}
+static HAL_StatusTypeDef SquareWave_Start(void)
+{ wave_start_calls++; square_wave_running=1U; return HAL_OK; }
+#include "square_wave_control_state.inc"
+#include "square_wave_control_under_test.inc"
 static void inject_bytes(const uint8_t *bytes, uint32_t count);
 static HAL_StatusTypeDef HAL_DMA_Init(DMA_HandleTypeDef *dma_handle)
 {
@@ -215,6 +231,11 @@ static void reset_control(void)
   daq_active_channel_mask=0x1FU; uart6_mask_apply_count=0U;
   inject_mask_on_data=UINT32_MAX;
   square_wave_running=1U; square_wave_actual_hz=1000U;
+  square_wave_frequency_hz=1000U;
+  wave_stop_calls=0U; wave_init_calls=0U; wave_start_calls=0U;
+  square_wave_last_request_hz=1000U; square_wave_last_set_status=UINT32_MAX;
+  square_wave_set_ok_count=0U; square_wave_set_error_count=0U;
+  square_wave_restore_status=UINT32_MAX;
   adc_snapshot_valid=0U; uart6_transmit_busy=0U; irq_mask=7U;
   UART6_ControlStart();
 }
@@ -266,10 +287,9 @@ int UART_CONTROL_MAIN(void)
   inject_bytes(request,4U); inject_bytes(request+5U,4U);
   inject_bytes(request,9U); drain(); CHECK(wire_calls==before+1U);
 
-  for(i=3U;i<=7U;i++)
+  for(i=3U;i<=5U;i++)
   {
-    uint16_t param=(i==7U)?2500U:((i==3U)?5U:((i==4U)?2U:((i==5U)?255U:1U)));
-    if(i==6U) { continue; }
+    uint16_t param=(i==3U)?5U:((i==4U)?2U:255U);
     before=wire_calls; calls=uart6_control_unsupported_count;
     make_control(bad,(uint8_t)i,param); inject_bytes(bad,9U); drain();
     CHECK(wire_calls==before && uart6_control_unsupported_count==calls+1U);

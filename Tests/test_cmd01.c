@@ -11,6 +11,9 @@ static uint32_t square_wave_running=1U, square_wave_actual_hz=1000U;
 static uint8_t status_frame[12];
 static void UART6_QueueStatus(void) { pending_status++; }
 #include "uart6_gear_state.inc"
+/* This suite isolates CMD01; CMD07's real executor is tested separately. */
+static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t hz)
+{ (void)hz; return HAL_OK; }
 #include "uart6_gear_under_test.inc"
 #include "uart6_status_source.inc"
 

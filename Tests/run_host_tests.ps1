@@ -24,6 +24,12 @@ function Get-FunctionText([string]$Source, [string]$Signature) {
 
 $mainSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'Core/Src/main.c'))
 $mainHeader = [IO.File]::ReadAllText((Join-Path $projectRoot 'Core/Inc/main.h'))
+$waveState = [regex]::Match($mainSource,
+    '(?s)/\* CMD07 diagnostics\..*?\*/(.*?)(?=/\* USART6 control receive/status state\. \*/)')
+if (-not $waveState.Success) { throw 'Missing CMD07 diagnostics.' }
+[IO.File]::WriteAllText((Join-Path $testOutput 'square_wave_control_state.inc'), $waveState.Groups[1].Value)
+[IO.File]::WriteAllText((Join-Path $testOutput 'square_wave_control_under_test.inc'),
+    (Get-FunctionText $mainSource ("static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz)`r`n{")))
 $sampleDefine = [regex]::Match($mainHeader, '(?m)^#define CH1_SNAPSHOT_SAMPLES[^\r\n]+')
 $snapshotType = [regex]::Match($mainHeader,
     '(?s)typedef struct\s*\{\s*uint16_t samples\[CH1_SNAPSHOT_SAMPLES\];\s*uint32_t group_count;\s*\} CH1_Snapshot;')
