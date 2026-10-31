@@ -14,6 +14,7 @@ static void UART6_QueueStatus(void) { pending_status++; }
 /* This suite isolates CMD01; CMD07's real executor is tested separately. */
 static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t hz)
 { (void)hz; return HAL_OK; }
+static void Trigger_Reset(void) { }
 #include "uart6_gear_under_test.inc"
 #include "uart6_status_source.inc"
 

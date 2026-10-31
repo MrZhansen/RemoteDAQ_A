@@ -226,6 +226,16 @@ static HAL_StatusTypeDef HAL_UART_Transmit(UART_HandleTypeDef *h,const uint8_t *
 #include "ch1_preview_state.inc"
 #include "ch1_uart_state.inc"
 #include "analog_frame_builder.inc"
+#include "trigger_config_state.inc"
+#ifndef TRIGGER_UART_STUBS_DEFINED
+#define TRIGGER_UART_STUBS_DEFINED
+static uint32_t Trigger_ProcessNewSnapshot(void) { return 0U; }
+static uint32_t Trigger_TakeReady(Full_Snapshot *snapshot)
+{ (void)snapshot; return 0U; }
+static uint32_t Trigger_BuildFramePreview(uint16_t sequence,
+                                          const Full_Snapshot *snapshot)
+{ (void)sequence; (void)snapshot; return 0U; }
+#endif
 #include "ch1_uart_under_test.inc"
 /* Route only the counter's HAL init call to its phase-specific stub. */
 #define HAL_TIM_Base_Init Counter_Base_Init

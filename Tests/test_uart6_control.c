@@ -100,6 +100,7 @@ static HAL_StatusTypeDef SquareWave_Start(void)
 { wave_start_calls++; square_wave_running=1U; return HAL_OK; }
 #include "square_wave_control_state.inc"
 #include "square_wave_control_under_test.inc"
+static void Trigger_Reset(void) { }
 static void inject_bytes(const uint8_t *bytes, uint32_t count);
 static HAL_StatusTypeDef HAL_DMA_Init(DMA_HandleTypeDef *dma_handle)
 {
@@ -236,6 +237,10 @@ static void reset_control(void)
   square_wave_last_request_hz=1000U; square_wave_last_set_status=UINT32_MAX;
   square_wave_set_ok_count=0U; square_wave_set_error_count=0U;
   square_wave_restore_status=UINT32_MAX;
+  daq_trigger_source=0U; daq_trigger_mode=0U; daq_trigger_level=0U;
+  trigger_command_ok_count=0U;
+  trigger_edge_count=0U; trigger_frame_count=0U; trigger_rearm_count=0U;
+  trigger_group_gap_count=0U;
   adc_snapshot_valid=0U; uart6_transmit_busy=0U; irq_mask=7U;
   UART6_ControlStart();
 }
@@ -290,11 +295,24 @@ int UART_CONTROL_MAIN(void)
   for(i=3U;i<=5U;i++)
   {
     uint16_t param=(i==3U)?5U:((i==4U)?2U:255U);
-    before=wire_calls; calls=uart6_control_unsupported_count;
+    before=wire_calls;
     make_control(bad,(uint8_t)i,param); inject_bytes(bad,9U); drain();
-    CHECK(wire_calls==before && uart6_control_unsupported_count==calls+1U);
-    CHECK(acquisition_active_gear==0U && square_wave_actual_hz==1000U);
+    CHECK(wire_calls==before+1U);
+    CHECK(trigger_command_ok_count==i-2U);
+    CHECK(wire_last[5]==5U);
+    CHECK(wire_last[6]==((i>=4U)?2U:0U));
+    CHECK(wire_last[7]==((i==5U)?255U:0U));
   }
+  CHECK(UART6_GetStatus(&state)==1U);
+  CHECK(state.trigger_source==5U && state.trigger_mode==2U &&
+        state.trigger_level==255U);
+  before=wire_calls; calls=uart6_control_unsupported_count;
+  make_control(bad,3U,6U); inject_bytes(bad,9U); drain();
+  CHECK(wire_calls==before && uart6_control_unsupported_count==calls);
+  CHECK(state.trigger_source==5U && state.trigger_mode==2U &&
+        state.trigger_level==255U);
+  make_control(bad,3U,0U); inject_bytes(bad,9U); drain();
+  CHECK(UART6_GetStatus(&state)==1U && state.trigger_source==0U);
   /* Legal protocol GEAR2 can be parsed but cannot change hardware. */
   make_control(bad,1U,2U); inject_bytes(bad,9U); drain(); CHECK(acquisition_active_gear==0U);
   make_control(bad,6U,1U); before=wire_calls; inject_bytes(bad,9U); drain(); CHECK(wire_calls==before);

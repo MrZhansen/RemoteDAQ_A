@@ -322,6 +322,16 @@ volatile uint32_t square_wave_set_ok_count = 0U;
 volatile uint32_t square_wave_set_error_count = 0U;
 volatile uint32_t square_wave_restore_status = 0xFFFFFFFFUL;
 
+/* CMD03/04/05 configuration. Source 0 keeps the legacy free-run path. */
+volatile uint32_t daq_trigger_source = DAQ_TRIGGER_SOURCE_OFF;
+volatile uint32_t daq_trigger_mode = DAQ_TRIGGER_MODE_RISE;
+volatile uint32_t daq_trigger_level = 0U;
+volatile uint32_t trigger_command_ok_count = 0U;
+volatile uint32_t trigger_edge_count = 0U;
+volatile uint32_t trigger_frame_count = 0U;
+volatile uint32_t trigger_rearm_count = 0U;
+volatile uint32_t trigger_group_gap_count = 0U;
+
 /* USART6 control receive/status state. */
 DMA_HandleTypeDef hdma_usart6_rx;
 /* F746 DMA-accessible RAM; cache remains disabled by the existing startup. */
@@ -384,11 +394,38 @@ volatile uint32_t uart6_gear_last_switch_result = 0xFFFFFFFFUL;
 /* End UART6 gear command state. */
 /* End USART6 control receive/status state. */
 
+/* Trigger engine state: main-context writer and reader.
+ * The 24-point history contains only complete, coherent Full_Snapshot points.
+ * A triggered frame stores 24 pre-trigger points, the edge point, then 25
+ * post-trigger points. No dynamic allocation is used. */
+typedef struct
+{
+  uint16_t ch1;
+  uint16_t ch2;
+  uint8_t dig;
+} TriggerPoint;
+
+static TriggerPoint trigger_history[DAQ_TRIGGER_PRE_SAMPLES];
+static uint32_t trigger_history_head = 0U;
+static uint32_t trigger_history_count = 0U;
+static uint32_t trigger_previous_valid = 0U;
+static TriggerPoint trigger_previous;
+static TriggerPoint trigger_frame[CH1_SNAPSHOT_SAMPLES];
+static uint32_t trigger_fill_count = 0U;
+static uint32_t trigger_capture_gear = ACQ_GEAR_INVALID;
+static uint32_t trigger_have_group = 0U;
+static uint32_t trigger_last_group = 0U;
+static volatile uint32_t trigger_frame_ready = 0U;
+static volatile uint32_t trigger_capture_active = 0U;
+static Full_Snapshot trigger_ready_snapshot;
+/* End trigger engine state. */
+
 /* Transport selection is local/preselected, not a new V1.1 command.
- * 0=verified UART default; 1=candidate UDP. Ordinary CMD01 still accepts 0/1.
+ * 0=UART; 1=UDP (boot default for the validated two-board setup).
+ * Ordinary CMD01 still accepts 0/1.
  * The legacy ch1_uart_next_seq is the shared selected-transport wire SEQ;
  * UDP has separate submission diagnostics, never UART-success counters. */
-volatile uint32_t daq_transport_request = 0U;
+volatile uint32_t daq_transport_request = 1U;
 volatile uint32_t daq_transport_active = 0U;
 volatile uint32_t daq_transport_result = 0U;
 volatile uint32_t daq_transport_change_count = 0U;
@@ -430,6 +467,11 @@ static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t tr
 static HAL_StatusTypeDef DigitalCounter_Init(void);
 static void Acquisition_UDPPolicyPoll(void);
 static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz);
+static void Trigger_Reset(void);
+static uint32_t Trigger_ProcessNewSnapshot(void);
+static uint32_t Trigger_TakeReady(Full_Snapshot *snapshot);
+static uint32_t Trigger_BuildFramePreview(uint16_t sequence,
+                                          const Full_Snapshot *snapshot);
 static void CH1_CaptureDebug(volatile CH1_DebugSnapshot *snapshot,
                              uint32_t primask_before);
 
@@ -611,7 +653,20 @@ static uint32_t CH1_FrameTransmitPoll(void)
   uint32_t new_groups_before;
   uint32_t i;
   uint16_t sequence;
+  Full_Snapshot trigger_snapshot;
   HAL_StatusTypeDef status;
+
+  if (daq_trigger_source != DAQ_TRIGGER_SOURCE_OFF)
+  {
+    uint32_t trigger_work = Trigger_ProcessNewSnapshot();
+    sequence = ch1_uart_next_seq;
+    if ((Trigger_TakeReady(&trigger_snapshot) == 0U) ||
+        (Trigger_BuildFramePreview(sequence, &trigger_snapshot) == 0U))
+    {
+      return trigger_work;
+    }
+    goto TriggerFrameReady;
+  }
 
   /* Cheap idle gate only. Full_GetSnapshot performs the authoritative
    * data/group consistency check inside the shared builder. */
@@ -627,6 +682,8 @@ static uint32_t CH1_FrameTransmitPoll(void)
   {
     return (ch1_new_group_count != new_groups_before) ? 1U : 0U;
   }
+
+TriggerFrameReady:
   if ((uart6_initialized == 0U) || (ch1_frame_gear > 1U))
   {
     ch1_uart_not_ready_count++;
@@ -858,6 +915,27 @@ static void UART6_DispatchControl(const DAQ_ControlCommand *command)
     if (SquareWave_ChangeFrequency(command->parameter) == HAL_OK)
     { UART6_QueueStatus(); }
   }
+  else if (command->command == DAQ_CMD_SET_TRIGGER_SOURCE)
+  {
+    daq_trigger_source = command->parameter;
+    Trigger_Reset();
+    trigger_command_ok_count++;
+    UART6_QueueStatus();
+  }
+  else if (command->command == DAQ_CMD_SET_TRIGGER_MODE)
+  {
+    daq_trigger_mode = command->parameter;
+    Trigger_Reset();
+    trigger_command_ok_count++;
+    UART6_QueueStatus();
+  }
+  else if (command->command == DAQ_CMD_SET_TRIGGER_LEVEL)
+  {
+    daq_trigger_level = command->parameter;
+    Trigger_Reset();
+    trigger_command_ok_count++;
+    UART6_QueueStatus();
+  }
   else if (command->command == DAQ_CMD_SET_CHANNEL_MASK)
   {
     /* Parser already validated 0..0x1F and PARAM_H/reserved/CRC. This runs
@@ -987,7 +1065,6 @@ static uint32_t UART6_ReceivePoll(void)
 static uint32_t UART6_GetStatus(DAQ_StatusState *state)
 {
   /* Hardware always samples all five inputs; CMD02 gates transmitted fields.
-   * No trigger algorithm or trigger command execution exists: all disabled.
    * Refuse an unavailable source instead of inventing a valid running state. */
   if ((adc_running == 0U) || (acquisition_switching != 0U) ||
       (acquisition_active_gear > 1U) || (acquisition_fault_latched != 0U) ||
@@ -996,9 +1073,9 @@ static uint32_t UART6_GetStatus(DAQ_StatusState *state)
   { return 0U; }
   state->gear = acquisition_active_gear;
   state->channel_mask = daq_active_channel_mask;
-  state->trigger_source = 0U;
-  state->trigger_mode = 0U;
-  state->trigger_level = 0U;
+  state->trigger_source = daq_trigger_source;
+  state->trigger_mode = daq_trigger_mode;
+  state->trigger_level = daq_trigger_level;
   state->wave_frequency_hz = square_wave_actual_hz;
   return 1U;
 }
@@ -2100,7 +2177,9 @@ static uint32_t DAQ_TransportGetStatus(DAQ_StatusState *state)
       (square_wave_running == 0U) || (square_wave_actual_hz < 100U) ||
       (square_wave_actual_hz > 10000U)) { return 0U; }
   state->gear = 2U; state->channel_mask = daq_active_channel_mask;
-  state->trigger_source = 0U; state->trigger_mode = 0U; state->trigger_level = 0U;
+  state->trigger_source = daq_trigger_source;
+  state->trigger_mode = daq_trigger_mode;
+  state->trigger_level = daq_trigger_level;
   state->wave_frequency_hz = square_wave_actual_hz;
   return 1U;
 }
@@ -2111,6 +2190,7 @@ static uint32_t DAQ_TransportPoll(void)
 {
   DAQ_ControlCommand command;
   DAQ_StatusState state;
+  Full_Snapshot trigger_snapshot;
   uint32_t work = 0U;
   uint32_t requested = daq_transport_request;
   uint32_t active = daq_transport_active;
@@ -2164,8 +2244,25 @@ static uint32_t DAQ_TransportPoll(void)
     { daq_udp_status_error_count++; }
     work = 1U;
   }
-  if ((adc_snapshot_valid != 0U) &&
-      ((ch1_preview_have_group == 0U) || (adc_group_count != ch1_preview_last_group)))
+  if (daq_trigger_source != DAQ_TRIGGER_SOURCE_OFF)
+  {
+    uint32_t trigger_work = Trigger_ProcessNewSnapshot();
+    if ((Trigger_TakeReady(&trigger_snapshot) != 0U) &&
+        (Trigger_BuildFramePreview(ch1_uart_next_seq, &trigger_snapshot) != 0U))
+    {
+      if (DAQ_NetSendFrame(ch1_preview_work, DAQ_DATA_FRAME_SIZE) != 0U)
+      {
+        daq_udp_last_seq = ch1_uart_next_seq;
+        daq_udp_last_group = ch1_frame_group;
+        ch1_uart_next_seq = (uint16_t)((uint32_t)ch1_uart_next_seq + 1U);
+      }
+      else { daq_udp_data_error_count++; }
+    }
+    work |= trigger_work;
+  }
+  else if ((adc_snapshot_valid != 0U) &&
+           ((ch1_preview_have_group == 0U) ||
+            (adc_group_count != ch1_preview_last_group)))
   {
     uint16_t sequence = ch1_uart_next_seq;
     if (Analog_BuildFramePreview(sequence, 2U) != 0U)
@@ -2861,6 +2958,279 @@ __root HAL_StatusTypeDef Full_GetSnapshot(Full_Snapshot *snapshot)
   if ((before != full_snapshot_seq) || (digital_sync.error != 0U)) { return HAL_BUSY; }
   *snapshot = candidate;
   return HAL_OK;
+}
+
+static void Trigger_Reset(void)
+{
+  uint32_t i;
+
+  trigger_history_head = 0U;
+  trigger_history_count = 0U;
+  trigger_previous_valid = 0U;
+  trigger_fill_count = 0U;
+  trigger_capture_gear = ACQ_GEAR_INVALID;
+  trigger_have_group = 0U;
+  trigger_last_group = 0U;
+  trigger_frame_ready = 0U;
+  trigger_capture_active = (daq_trigger_source != DAQ_TRIGGER_SOURCE_OFF) ? 1U : 0U;
+  trigger_previous.ch1 = 0U;
+  trigger_previous.ch2 = 0U;
+  trigger_previous.dig = 0U;
+  for (i = 0U; i < DAQ_TRIGGER_PRE_SAMPLES; i++)
+  {
+    trigger_history[i].ch1 = 0U;
+    trigger_history[i].ch2 = 0U;
+    trigger_history[i].dig = 0U;
+  }
+  /* Trigger mode intentionally suppresses free-run frames. Restart sequence
+   * bookkeeping so returning to source 0 does not treat that suppression as
+   * acquisition loss. */
+  ch1_preview_have_group = 0U;
+}
+
+/* CMD05 is an 8-bit protocol value. Map it linearly to the 12-bit ADC range,
+ * rounding to the nearest raw count. Digital sources ignore this threshold. */
+static uint32_t Trigger_AnalogThreshold(void)
+{
+  return ((daq_trigger_level * 4095U) + 127U) / 255U;
+}
+
+static uint32_t Trigger_PointValue(const TriggerPoint *point)
+{
+  switch (daq_trigger_source)
+  {
+    case 1U: return point->ch1;
+    case 2U: return point->ch2;
+    case 3U: return (uint32_t)(point->dig & 0x01U);
+    case 4U: return (uint32_t)((point->dig >> 1U) & 0x01U);
+    case 5U: return (uint32_t)((point->dig >> 2U) & 0x01U);
+    default: return 0U;
+  }
+}
+
+static uint32_t Trigger_IsEdge(const TriggerPoint *previous,
+                               const TriggerPoint *current)
+{
+  uint32_t before;
+  uint32_t after;
+
+  if ((daq_trigger_source == DAQ_TRIGGER_SOURCE_OFF) ||
+      (daq_trigger_mode > DAQ_TRIGGER_MODE_ANY))
+  {
+    return 0U;
+  }
+  before = Trigger_PointValue(previous);
+  after = Trigger_PointValue(current);
+  if (daq_trigger_source <= 2U)
+  {
+    uint32_t threshold = Trigger_AnalogThreshold();
+    if (daq_trigger_mode == DAQ_TRIGGER_MODE_RISE)
+    { return (before <= threshold) && (after > threshold); }
+    if (daq_trigger_mode == DAQ_TRIGGER_MODE_FALL)
+    { return (before >= threshold) && (after < threshold); }
+    return (((before <= threshold) && (after > threshold)) ||
+            ((before >= threshold) && (after < threshold)));
+  }
+  if (daq_trigger_mode == DAQ_TRIGGER_MODE_RISE)
+  { return (before == 0U) && (after != 0U); }
+  if (daq_trigger_mode == DAQ_TRIGGER_MODE_FALL)
+  { return (before != 0U) && (after == 0U); }
+  return before != after;
+}
+
+static void Trigger_HistoryPush(const TriggerPoint *point)
+{
+  trigger_history[trigger_history_head] = *point;
+  trigger_history_head = (trigger_history_head + 1U) % DAQ_TRIGGER_PRE_SAMPLES;
+  if (trigger_history_count < DAQ_TRIGGER_PRE_SAMPLES)
+  {
+    trigger_history_count++;
+  }
+}
+
+/* Pure main-context trigger core. Every point comes from one Full_Snapshot,
+ * so ch1/ch2/dig always carry the same acquisition time index. */
+static void Trigger_ProcessSnapshot(const Full_Snapshot *snapshot)
+{
+  TriggerPoint current;
+  uint32_t i;
+  uint32_t j;
+
+  if ((snapshot == NULL) || (daq_trigger_source == DAQ_TRIGGER_SOURCE_OFF))
+  {
+    return;
+  }
+  if ((trigger_capture_active != 0U) && (trigger_capture_gear != snapshot->gear))
+  {
+    Trigger_Reset();
+  }
+  trigger_capture_gear = snapshot->gear;
+  if (trigger_capture_active == 0U)
+  {
+    trigger_capture_active = 1U;
+  }
+
+  for (i = 0U; i < CH1_SNAPSHOT_SAMPLES; i++)
+  {
+    current.ch1 = snapshot->ch1[i];
+    current.ch2 = snapshot->ch2[i];
+    current.dig = snapshot->dig[i];
+
+    /* Do not overwrite a completed window before the main transport has
+     * consumed it. The next group re-arms after Trigger_TakeReady(). */
+    if (trigger_frame_ready != 0U)
+    {
+      continue;
+    }
+
+    if (trigger_fill_count != 0U)
+    {
+      trigger_frame[trigger_fill_count] = current;
+      trigger_fill_count++;
+      if (trigger_fill_count == CH1_SNAPSHOT_SAMPLES)
+      {
+        for (j = 0U; j < CH1_SNAPSHOT_SAMPLES; j++)
+        {
+          trigger_ready_snapshot.ch1[j] = trigger_frame[j].ch1;
+          trigger_ready_snapshot.ch2[j] = trigger_frame[j].ch2;
+          trigger_ready_snapshot.dig[j] = trigger_frame[j].dig;
+        }
+        trigger_ready_snapshot.group_count = snapshot->group_count;
+        trigger_ready_snapshot.gear = snapshot->gear;
+        __DMB();
+        trigger_frame_ready = 1U;
+        trigger_frame_count++;
+        trigger_rearm_count++;
+        trigger_fill_count = 0U;
+        trigger_capture_active = 0U;
+        trigger_previous_valid = 0U;
+        trigger_history_head = 0U;
+        trigger_history_count = 0U;
+      }
+      continue;
+    }
+
+    if ((trigger_previous_valid != 0U) &&
+        (trigger_history_count == DAQ_TRIGGER_PRE_SAMPLES) &&
+        (Trigger_IsEdge(&trigger_previous, &current) != 0U))
+    {
+      uint32_t oldest = trigger_history_head;
+      for (j = 0U; j < DAQ_TRIGGER_PRE_SAMPLES; j++)
+      {
+        trigger_frame[j] = trigger_history[(oldest + j) %
+                                           DAQ_TRIGGER_PRE_SAMPLES];
+      }
+      trigger_frame[DAQ_TRIGGER_PRE_SAMPLES] = current;
+      trigger_fill_count = DAQ_TRIGGER_PRE_SAMPLES + 1U;
+      trigger_edge_count++;
+      trigger_previous_valid = 0U;
+      continue;
+    }
+
+    trigger_previous = current;
+    trigger_previous_valid = 1U;
+    Trigger_HistoryPush(&current);
+  }
+}
+
+static uint32_t Trigger_ProcessNewSnapshot(void)
+{
+  Full_Snapshot snapshot;
+  uint32_t group;
+  uint32_t delta;
+
+  if (daq_trigger_source == DAQ_TRIGGER_SOURCE_OFF)
+  {
+    return 0U;
+  }
+  if ((trigger_have_group != 0U) && (adc_group_count == trigger_last_group))
+  {
+    return 0U;
+  }
+  if (Full_GetSnapshot(&snapshot) != HAL_OK)
+  {
+    return 0U;
+  }
+  group = snapshot.group_count;
+  if (trigger_have_group != 0U)
+  {
+    delta = group - trigger_last_group;
+    if (delta > 1U)
+    {
+      trigger_group_gap_count += delta - 1U;
+    }
+  }
+  trigger_have_group = 1U;
+  trigger_last_group = group;
+  Trigger_ProcessSnapshot(&snapshot);
+  return 1U;
+}
+
+static uint32_t Trigger_TakeReady(Full_Snapshot *snapshot)
+{
+  if ((snapshot == NULL) || (trigger_frame_ready == 0U))
+  {
+    return 0U;
+  }
+  *snapshot = trigger_ready_snapshot;
+  __DMB();
+  trigger_frame_ready = 0U;
+  return 1U;
+}
+
+/* Build a protocol frame from a completed triggered window. This reuses the
+ * normal protocol builders and sequence ownership; it does not bypass GEAR2
+ * or channel-mask validation. */
+static uint32_t Trigger_BuildFramePreview(uint16_t sequence,
+                                          const Full_Snapshot *snapshot)
+{
+  DAQ_FrameStatus build_status;
+  uint32_t i;
+  uint32_t channel_mask;
+
+  if (snapshot == NULL)
+  {
+    return 0U;
+  }
+  channel_mask = daq_active_channel_mask;
+  if (snapshot->gear == 2U)
+  {
+    build_status = DAQ_BuildUDPGEAR2CandidateFrame(snapshot->ch1,
+        snapshot->ch2, snapshot->dig, channel_mask, sequence,
+        ch1_preview_work, sizeof(ch1_preview_work));
+  }
+  else
+  {
+    build_status = DAQ_BuildSelectedFrameForGear(snapshot->ch1,
+        snapshot->ch2, snapshot->dig, snapshot->gear, channel_mask, sequence,
+        ch1_preview_work, sizeof(ch1_preview_work));
+  }
+  ch1_last_build_status = (uint32_t)build_status;
+  if (build_status != DAQ_FRAME_OK)
+  {
+    ch1_frame_error_count++;
+    return 0U;
+  }
+
+  ch1_frame_preview_seq++;
+  __DMB();
+  for (i = 0U; i < DAQ_DATA_FRAME_SIZE; i++)
+  {
+    ch1_frame_preview[i] = ch1_preview_work[i];
+  }
+  ch1_frame_group = snapshot->group_count;
+  ch1_frame_channel_mask = channel_mask;
+  ch1_frame_gear = snapshot->gear;
+  ch1_preview_have_group = 1U;
+  ch1_preview_last_group = snapshot->group_count;
+  ch1_new_group_count++;
+  ch1_frame_preview_crc = (uint32_t)ch1_preview_work[DAQ_DATA_CRC_OFFSET] |
+      ((uint32_t)ch1_preview_work[DAQ_DATA_CRC_OFFSET + 1U] << 8U);
+  ch1_frame_build_count++;
+  ch1_frame_preview_valid = 1U;
+  __DMB();
+  ch1_frame_preview_seq++;
+  return 1U;
 }
 
 /* Called in the DMA IRQ: each half contains 50 [CH2, CH1] point pairs.

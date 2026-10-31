@@ -18,7 +18,7 @@ function Function-Text([string]$Signature) {
 }
 $state=[regex]::Match($main,'(?s)volatile uint32_t square_wave_running.*?(?=/\* USART6 control receive/status state\. \*/)')
 if(-not $state.Success){throw 'Missing square-wave state'}
-$defines=[regex]::Matches($header+$main,'(?m)^#define SQUARE_WAVE_[A-Z_]+[^\r\n]+') | ForEach-Object {$_.Value}
+$defines=[regex]::Matches($header+$main,'(?m)^#define (?:SQUARE_WAVE|DAQ_TRIGGER)_[A-Z0-9_]+[^\r\n]+') | ForEach-Object {$_.Value}
 $functions=@('HAL_StatusTypeDef SquareWave_Init(uint32_t frequency_hz)',
   'HAL_StatusTypeDef SquareWave_Start(void)',
   '__root HAL_StatusTypeDef SquareWave_Stop(void)',
@@ -26,8 +26,16 @@ $functions=@('HAL_StatusTypeDef SquareWave_Init(uint32_t frequency_hz)',
   ForEach-Object {Function-Text $_}
 [IO.File]::WriteAllText((Join-Path $OutputDirectory 'square_wave_api_under_test.inc'),
   (($defines -join [Environment]::NewLine)+[Environment]::NewLine+$state.Value+($functions -join [Environment]::NewLine)))
+$transportState=[regex]::Match($main,'(?s)/\* Transport selection is local/preselected.*?(?=/\* USER CODE END PV \*/)')
+if(-not $transportState.Success){throw 'Missing transport state'}
+[IO.File]::WriteAllText((Join-Path $OutputDirectory 'transport_state.inc'),$transportState.Value)
+$transportStart=$main.IndexOf('static uint32_t DAQ_TransportGetStatus(DAQ_StatusState *state)')
+$transportEnd=$main.IndexOf('/* USER CODE END 0 */',$transportStart)
+if($transportStart -lt 0 -or $transportEnd -lt 0){throw 'Missing transport service'}
+[IO.File]::WriteAllText((Join-Path $OutputDirectory 'transport_under_test.inc'),
+  $main.Substring($transportStart,$transportEnd-$transportStart))
 $base=@('-std=c11','-O2','-Wall','-Wextra','-Werror','-pedantic','-I',(Join-Path $root 'Core/Inc'),
-  '-I',$OutputDirectory,'-I',(Join-Path $FixtureRoot 'host_network'),'-I',(Join-Path $FixtureRoot 'host_network_baseline'))
+  '-I',$OutputDirectory,'-I',$FixtureRoot,'-I',(Join-Path $FixtureRoot 'host_network'),'-I',(Join-Path $FixtureRoot 'host_network_baseline'))
 foreach($suite in @('square_wave_control','cmd07')) {
   $exe=Join-Path $OutputDirectory ('test_'+$suite+'.exe')
   & $Compiler @base (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $PSScriptRoot ('test_'+$suite+'.c')) '-o' $exe 2>&1 | ForEach-Object {$_}

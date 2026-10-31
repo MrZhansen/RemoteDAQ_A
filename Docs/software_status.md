@@ -1,3 +1,71 @@
+# Trigger software/build checkpoint — 2026-10-31
+
+Implemented CMD03/04/05 runtime configuration and a main-context trigger
+engine while preserving the protocol frame sizes, CRC, ADC DMA layout and
+clock configuration. Trigger sources are 0=off, 1=CH1, 2=CH2, 3=D1, 4=D2 and
+5=D3; modes are 0=rising, 1=falling, 2=any edge. A completed window contains
+24 pre-trigger points, the edge point and 25 post-trigger points. CH1, CH2 and
+D1-D3 are copied from the same `Full_Snapshot` sample indices. Source 0 keeps
+the original free-run path, and a published trigger window clears and re-arms.
+
+The full host regression passed on 2026-10-31, including 145 trigger-engine
+checks, 3480 protocol checks, 438334 control/status checks and all existing
+snapshot, UART, ADC/DMA, digital-sync, GEAR, CMD01/02 and transport suites.
+The CMD07 follow-up suites also passed independently: 109 TIM3/CMD07 checks and
+204 UART/UDP/status/G0-G2 checks. These are host simulations, not hardware
+evidence. The trigger-engine suite explicitly cross-checks every CH1/CH2/D1/D2/D3
+source against rising, falling and any-edge modes.
+
+IAR Rebuild All completed and generated the HEX successfully; the operator
+reported no build errors. The current HEX was regenerated at 2026-10-31
+16:23:58 +08:00. Linker memory: code 43418 bytes, readonly data 1768,
+readwrite data 54383 plus 400 absolute. HEX SHA-256 is
+`367D4E2894E2B5C9184AA1FDFF7BB7090E3E1FEF823F608A559AC32B0CB65EC2`.
+The MAP still places `adc_dma_buffer` at `0x20010000` with size `0x190` and
+`ethernet_dma` at `0x20018000` with size `0x4a00`; the 4096-byte CSTACK
+configuration is unchanged.
+OUT, HEX, MAP, SHA-256 manifest and the verification log are retained under
+`D:/QRS/Project/RemoteDAQ_A/RemoteDAQ_A/tmp/trigger_build_20261031/`.
+The prior verified CMD07 OUT/HEX/MAP is separately backed up under
+`D:/QRS/Project/RemoteDAQ_A/RemoteDAQ_A/backups/pre_trigger_20261031_cmd07_stable/`;
+its HEX SHA-256 is
+`712DC9CFB2F68E4735154294F5AC742853A2A9CB570AAC651B30B307F8EB4C3D`.
+
+The A board was subsequently programmed with this trigger build without a full
+chip erase. CMD07 regression on the new image passed for 100 Hz, 1 kHz, 5 kHz
+and 10 kHz, with B CRC=0 and acquisition/DMA faults clear. At that initial
+checkpoint, CMD03/04/05 and the five actual trigger sources were still pending;
+the hardware progress obtained afterwards is recorded below.
+
+Real-board trigger progress on 2026-10-31:
+
+- CMD03/04/05 reached A over UDP. Live SWD reads confirmed CH2 source
+  (`daq_trigger_source=2`), rising-edge mode (`daq_trigger_mode=0`) and
+  protocol levels 96 and 64.
+- CH1 and CH2 rising, falling and any-edge trigger runs produced complete
+  trigger frames; the captured CH2 evidence under
+  `tmp/trigger_live_20261031/` has `CRC=0`.
+- A microphone signal in the approximately 400-600 Hz range made
+  `trigger_edge_count` and `trigger_frame_count` increase together. At level
+  96 the observed edge count advanced from 8807 to 9083 while the frame count
+  advanced from 8806 to 9081, with one group gap and
+  `digital_sync.error=0`. After lowering the level to 64, the operator
+  confirmed continued counter growth and a continuously refreshed B waveform.
+- Exact 500 Hz, 1 kHz and 2 kHz microphone acceptance, microphone falling/any
+  edge records, D1/D2/D3 physical trigger runs and the five-channel alignment
+  run remain pending.
+
+Hardware signal mapping used by this build:
+
+- CH1 analog: PF10 / ADC3_IN8 / Arduino A1.
+- CH2 analog: PA0 / ADC3_IN0 / Arduino A0.
+- D1 digital: PG6 / Arduino D2, protocol bit 0.
+- D2 digital: PG7 / Arduino D4, protocol bit 1.
+- D3 digital: PI3 / Arduino D7, protocol bit 2.
+- All external trigger inputs must remain within 0..3.3 V and share ground.
+
+---
+
 # CMD07 hardware acceptance checkpoint — 2026-10-30
 
 CMD07 rectangular-wave frequency control passed real-hardware acceptance on the

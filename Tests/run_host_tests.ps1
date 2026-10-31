@@ -25,11 +25,34 @@ function Get-FunctionText([string]$Source, [string]$Signature) {
 $mainSource = [IO.File]::ReadAllText((Join-Path $projectRoot 'Core/Src/main.c'))
 $mainHeader = [IO.File]::ReadAllText((Join-Path $projectRoot 'Core/Inc/main.h'))
 $waveState = [regex]::Match($mainSource,
-    '(?s)/\* CMD07 diagnostics\..*?\*/(.*?)(?=/\* USART6 control receive/status state\. \*/)')
+    '(?s)/\* CMD07 diagnostics\..*?\*/(.*?)(?=/\* CMD03/04/05 configuration\.)')
 if (-not $waveState.Success) { throw 'Missing CMD07 diagnostics.' }
 [IO.File]::WriteAllText((Join-Path $testOutput 'square_wave_control_state.inc'), $waveState.Groups[1].Value)
+$triggerConfig = [regex]::Match($mainSource,
+    '(?s)/\* CMD03/04/05 configuration\..*?\*/(.*?)(?=/\* USART6 control receive/status state\. \*/)')
+if (-not $triggerConfig.Success) { throw 'Missing trigger configuration state.' }
+$triggerDefines = [regex]::Matches($mainHeader,
+    '(?m)^#define DAQ_TRIGGER_[A-Z0-9_]+[^\r\n]+') | ForEach-Object { $_.Value }
+[IO.File]::WriteAllText((Join-Path $testOutput 'trigger_config_state.inc'),
+    (($triggerDefines -join "`r`n") + "`r`n" + $triggerConfig.Groups[1].Value))
 [IO.File]::WriteAllText((Join-Path $testOutput 'square_wave_control_under_test.inc'),
     (Get-FunctionText $mainSource ("static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz)`r`n{")))
+$triggerState = [regex]::Match($mainSource,
+    '(?s)/\* Trigger engine state: .*?\*/(.*?)/\* End trigger engine state\. \*/')
+if (-not $triggerState.Success) { throw 'Missing trigger engine state.' }
+$triggerFunctions = @(
+    'static void Trigger_Reset(void)',
+    'static uint32_t Trigger_AnalogThreshold(void)',
+    'static uint32_t Trigger_PointValue(const TriggerPoint *point)',
+    ('static uint32_t Trigger_IsEdge(const TriggerPoint *previous,' +
+        [Environment]::NewLine + '                               const TriggerPoint *current)'),
+    'static void Trigger_HistoryPush(const TriggerPoint *point)',
+    'static void Trigger_ProcessSnapshot(const Full_Snapshot *snapshot)',
+    'static uint32_t Trigger_TakeReady(Full_Snapshot *snapshot)'
+) | ForEach-Object { Get-FunctionText $mainSource ($_ + [Environment]::NewLine + '{') }
+[IO.File]::WriteAllText((Join-Path $testOutput 'trigger_engine_under_test.inc'),
+    $triggerState.Groups[1].Value + [Environment]::NewLine +
+    ($triggerFunctions -join [Environment]::NewLine))
 $sampleDefine = [regex]::Match($mainHeader, '(?m)^#define CH1_SNAPSHOT_SAMPLES[^\r\n]+')
 $snapshotType = [regex]::Match($mainHeader,
     '(?s)typedef struct\s*\{\s*uint16_t samples\[CH1_SNAPSHOT_SAMPLES\];\s*uint32_t group_count;\s*\} CH1_Snapshot;')
@@ -56,6 +79,12 @@ $snapshotExe = Join-Path $testOutput 'test_ch1_snapshot.exe'
 if ($LASTEXITCODE -ne 0) { throw "Protocol host compile failed: $LASTEXITCODE" }
 & $protocolExe 2>&1 | ForEach-Object { $_ }
 if ($LASTEXITCODE -ne 0) { throw "Protocol tests failed: $LASTEXITCODE" }
+$triggerExe = Join-Path $testOutput 'test_trigger_engine.exe'
+& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' `
+    '-I' $testOutput (Join-Path $PSScriptRoot 'test_trigger_engine.c') '-o' $triggerExe 2>&1 | ForEach-Object { $_ }
+if ($LASTEXITCODE -ne 0) { throw "Trigger engine host compile failed: $LASTEXITCODE" }
+& $triggerExe 2>&1 | ForEach-Object { $_ }
+if ($LASTEXITCODE -ne 0) { throw "Trigger engine tests failed: $LASTEXITCODE" }
 & $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' `
     '-I' $testOutput (Join-Path $PSScriptRoot 'test_ch1_snapshot.c') '-o' $snapshotExe 2>&1 | ForEach-Object { $_ }
 if ($LASTEXITCODE -ne 0) { throw "Snapshot host compile failed: $LASTEXITCODE" }

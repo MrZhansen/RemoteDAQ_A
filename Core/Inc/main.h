@@ -73,6 +73,13 @@ typedef struct
 #define SQUARE_WAVE_MAX_HZ      10000U
 #define SQUARE_WAVE_DEFAULT_HZ  1000U
 
+#define DAQ_TRIGGER_SOURCE_OFF  0U
+#define DAQ_TRIGGER_MODE_RISE   0U
+#define DAQ_TRIGGER_MODE_FALL   1U
+#define DAQ_TRIGGER_MODE_ANY    2U
+#define DAQ_TRIGGER_PRE_SAMPLES 24U
+#define DAQ_TRIGGER_POST_SAMPLES 25U
+
 /* USER CODE END EC */
 
 /* Exported macro ------------------------------------------------------------*/

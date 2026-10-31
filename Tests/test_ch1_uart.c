@@ -85,6 +85,13 @@ static HAL_StatusTypeDef Full_GetSnapshot(Full_Snapshot *snapshot)
 #include "ch1_preview_state.inc"
 #include "ch1_uart_state.inc"
 #include "analog_frame_builder.inc"
+#include "trigger_config_state.inc"
+static uint32_t Trigger_ProcessNewSnapshot(void) { return 0U; }
+static uint32_t Trigger_TakeReady(Full_Snapshot *snapshot)
+{ (void)snapshot; return 0U; }
+static uint32_t Trigger_BuildFramePreview(uint16_t sequence,
+                                          const Full_Snapshot *snapshot)
+{ (void)sequence; (void)snapshot; return 0U; }
 #include "ch1_uart_under_test.inc"
 
 static void barrier(void)
