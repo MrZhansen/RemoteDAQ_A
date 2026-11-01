@@ -31,10 +31,12 @@ int main(int argc,char **argv)
 {
   static const struct {uint32_t gear,mask;uint16_t sequence;} cases[]={
     {0U,31U,0U},{1U,31U,1U},{2U,31U,2U},{2U,31U,65535U},
-    {2U,0U,0U},{2U,1U,1U},{2U,3U,2U},{2U,30U,3U}
+    {2U,0U,0U},{2U,1U,1U},{2U,3U,2U},{2U,30U,3U},
+    {3U,31U,3U},{4U,31U,4U}
   };
   static const struct {uint8_t cmd;uint16_t parameter;} commands[]={
-    {6U,0U},{1U,1U},{1U,0U},{1U,2U},{2U,0U},{2U,1U},{2U,31U}
+    {6U,0U},{1U,1U},{1U,0U},{1U,2U},{1U,3U},{1U,4U},
+    {2U,0U},{2U,1U},{2U,31U}
   };
   uint16_t ch1[50],ch2[50],crc; uint8_t dig[50],frame[260],control[9];
   DAQ_ControlCommand decoded;
@@ -84,7 +86,7 @@ int main(int argc,char **argv)
     for(i=0U;i<50U;i++) { CHECK(fprintf(csv,"%u,%u,%u,%u\n",(unsigned)i,(unsigned)ch1[i],(unsigned)ch2[i],(unsigned)dig[i])>0); }
     CHECK(fclose(csv)==0);
   }
-  for(c=0U;c<3U;c++)
+  for(c=0U;c<5U;c++)
   {
     status.gear=c; CHECK(DAQ_BuildStatusFrame(&status,frame,sizeof(frame))==DAQ_STATUS_OK);
     CHECK(DAQ_NetSendFrame(frame,12U)==1U && output_size==54U);
@@ -92,7 +94,7 @@ int main(int argc,char **argv)
     CHECK(memcmp(output,confirmed_b_mac,6U)==0 && memcmp(output+6U,actual_a_mac,6U)==0); Capture(pcap,8U+c);
     crc=DAQ_CRC16_CCITT_FALSE(frame,10U);
     CHECK(snprintf(filename,sizeof(filename),"status_%02u.bin",(unsigned)c)>0); Save(argv[1],filename,frame,12U);
-    CHECK(fprintf(manifest,"status,%s,%u,31,NA,12,%04X,%s\n",filename,(unsigned)c,(unsigned)crc,c==2U?"candidate-state-example":"production-gear")>0);
+    CHECK(fprintf(manifest,"status,%s,%u,31,NA,12,%04X,production-gear\n",filename,(unsigned)c,(unsigned)crc)>0);
   }
   for(c=0U;c<sizeof(commands)/sizeof(commands[0]);c++)
   {
@@ -106,7 +108,7 @@ int main(int argc,char **argv)
     CHECK(fprintf(manifest,"control,%s,NA,NA,NA,9,%04X,%s\n",filename,(unsigned)crc,(commands[c].cmd==1U && commands[c].parameter==2U)?"parse-valid-execution-unsupported":"parsed-only-no-HAL-execution")>0);
   }
   CHECK(fclose(manifest)==0 && fclose(pcap)==0);
-  CHECK(daq_net.data_submitted==8U && daq_net.status_submitted==3U);
-  printf("PASS offline UDP interoperability vectors: %lu checks; 18 payloads/11 synthetic PCAP packets, no hardware\n",(unsigned long)checks);
+  CHECK(daq_net.data_submitted==10U && daq_net.status_submitted==5U);
+  printf("PASS offline UDP interoperability vectors: %lu checks; 24 payloads/15 synthetic PCAP packets, no hardware\n",(unsigned long)checks);
   return 0;
 }

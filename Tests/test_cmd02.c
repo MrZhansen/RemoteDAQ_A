@@ -87,7 +87,7 @@ static void protocol_masks(void)
   }
   CHECK(DAQ_BuildSelectedFrameForGear(first,second,bits,0U,0x100U,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);
   CHECK(DAQ_BuildSelectedFrameForGear(first,second,bits,0U,UINT32_MAX,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);
-  CHECK(DAQ_BuildSelectedFrameForGear(first,second,bits,2U,31U,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);
+  CHECK(DAQ_BuildSelectedFrameForGear(first,second,bits,5U,31U,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);
   CHECK(DAQ_BuildSelectedFrameForGear(first,second,bits,0U,31U,7U,guarded,259U)==DAQ_FRAME_BAD_ARGUMENT);
   CHECK(DAQ_BuildSelectedFrameForGear(NULL,second,bits,0U,1U,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);
   CHECK(DAQ_BuildSelectedFrameForGear(first,NULL,bits,0U,2U,7U,guarded,260U)==DAQ_FRAME_BAD_ARGUMENT);

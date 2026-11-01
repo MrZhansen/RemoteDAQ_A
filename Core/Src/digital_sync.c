@@ -13,10 +13,16 @@ void DigitalTiming_TestHook(void);
 #endif
 #endif
 
+/* The only production GEAR table. Acquisition, digital synchronization and
+ * host tests resolve through this array, so sample cycles, timer periods,
+ * deadlines, transport requirements and ISR path cannot drift independently. */
 static const DigitalSyncTimingConfig timing_profiles[] =
 {
-  {200U, DIGITAL_SYNC_MAX_PHASE_US, DIGITAL_SYNC_MAX_BODY_US},
-  {100U, DIGITAL_SYNC_MAX_PHASE_US, DIGITAL_SYNC_MAX_BODY_US}
+  {200U, 20U, 20U, 480U, 4320U, 4320U, 0U, 0U},
+  {100U, 20U, 20U, 480U, 4320U, 4320U, 0U, 0U},
+  { 20U,  4U,  4U, 144U,  864U,  864U, 0U, 1U},
+  { 10U,  2U,  4U,  28U,  540U,  972U, 1U, 1U},
+  {  2U,  1U,  1U,   3U,  216U,  390U, 1U, 1U}
 };
 
 const DigitalSyncTimingConfig *DigitalSync_GetTimingConfig(uint32_t gear)
@@ -25,24 +31,25 @@ const DigitalSyncTimingConfig *DigitalSync_GetTimingConfig(uint32_t gear)
   return &timing_profiles[gear];
 }
 
-/* No GEAR2 profile. The short deadline applies only to GEAR0/144 cycles. */
-static const DigitalSyncTimingConfig adc144_timing = {200U, 4U, DIGITAL_SYNC_MAX_BODY_US};
+/* GEAR0/144 remains the only non-profile ADC experiment. */
+static const DigitalSyncTimingConfig adc144_timing =
+  {200U, 4U, DIGITAL_SYNC_MAX_BODY_US, 144U, 864U, 4320U, 0U, 0U};
 
 const DigitalSyncTimingConfig *DigitalSync_GetTimingConfigForADC(uint32_t gear,
                                                                uint32_t sample_cycles)
 {
-  if (sample_cycles == 480U) { return DigitalSync_GetTimingConfig(gear); }
+  const DigitalSyncTimingConfig *profile = DigitalSync_GetTimingConfig(gear);
+  if ((profile != NULL) && (profile->adc_sample_cycles == sample_cycles))
+  { return profile; }
   if ((sample_cycles == 144U) && (gear == 0U)) { return &adc144_timing; }
   return NULL;
 }
 
-/* Candidate only: same <=4-count early-read guard as GEAR0/144.
- * A separate 4 us body budget is deliberately stricter than the old 20 us.
- * Neither limit is a measured hardware qualification. */
+/* Compatibility aliases: the isolated owners use the same GEAR2 table row as
+ * production. Neither deadline is a measured hardware qualification. */
 const DigitalSyncTimingConfig *DigitalSync_GetOfflineTimingConfig(void)
 {
-  static const DigitalSyncTimingConfig candidate = {20U, 4U, 4U};
-  return &candidate;
+  return DigitalSync_GetTimingConfig(2U);
 }
 
 /* Same conservative candidate deadlines; separate activation owners. */
@@ -67,11 +74,13 @@ void DigitalSync_Init(DigitalSync *state)
   state->sample_count = 0U;
   state->last_ndtr = 0U;
   state->last_phase_us = 0U;
+  state->last_phase_cycles = 0U;
   state->last_trigger = 0U;
   state->fault_detail = 0U;
   state->timing = timing_profiles[0];
 }
 
+DIGITAL_SYNC_FAST_CODE
 void DigitalSync_FaultWithDetail(DigitalSync *state, uint32_t reason, uint32_t detail)
 {
   if (state->error == 0U)
@@ -96,6 +105,58 @@ uint32_t DigitalSync_Record(DigitalSync *state, uint32_t trigger, uint32_t ndtr,
   state->last_phase_us = phase;
   if (state->error != 0U) { return 0U; }
   if (phase > state->timing.max_phase_us)
+  {
+    DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_LATE, DIGITAL_SYNC_DETAIL_PHASE);
+    return 0U;
+  }
+  index = state->next_index;
+  if ((uint32_t)(trigger - state->last_trigger) != 1U)
+  {
+    DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_ALIGN, DIGITAL_SYNC_DETAIL_TRIGGER);
+    return 0U;
+  }
+  if ((ndtr == 0U) || (ndtr > 200U))
+  {
+    DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_ALIGN, DIGITAL_SYNC_DETAIL_NDTR_RANGE);
+    return 0U;
+  }
+  if (((200U - ndtr) / 2U) != index)
+  {
+    DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_ALIGN, DIGITAL_SYNC_DETAIL_NDTR_INDEX);
+    return 0U;
+  }
+  if ((bits & 0xF8U) != 0U)
+  {
+    DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_ALIGN, DIGITAL_SYNC_DETAIL_BITS);
+    return 0U;
+  }
+  half = index / DIGITAL_SYNC_HALF;
+  if ((index % DIGITAL_SYNC_HALF) == 0U) { state->half_ready[half] = 0U; }
+  state->points[index] = bits;
+  state->last_trigger = trigger;
+  state->sample_count++;
+  index++;
+  if ((index % DIGITAL_SYNC_HALF) == 0U)
+  {
+    state->completed_groups++;
+    state->half_group[half] = state->completed_groups;
+    state->half_ready[half] = 1U;
+  }
+  state->next_index = (index == DIGITAL_SYNC_POINTS) ? 0U : index;
+  return 1U;
+}
+
+DIGITAL_SYNC_FAST_CODE
+uint32_t DigitalSync_RecordFast(DigitalSync *state, uint32_t trigger,
+                                uint32_t ndtr, uint32_t phase_cycles,
+                                uint8_t bits)
+{
+  uint32_t index;
+  uint32_t half;
+  state->last_ndtr = ndtr;
+  state->last_phase_cycles = phase_cycles;
+  if (state->error != 0U) { return 0U; }
+  if (phase_cycles > state->timing.max_phase_cycles)
   {
     DigitalSync_FaultWithDetail(state, DIGITAL_SYNC_ERROR_LATE, DIGITAL_SYNC_DETAIL_PHASE);
     return 0U;

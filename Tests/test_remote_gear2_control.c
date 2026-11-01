@@ -32,10 +32,22 @@ int main(void)
   Request(2U,1U); (void)DAQ_TransportPoll();
   set_group(103U,345U); source.gear=2U; (void)DAQ_TransportPoll();
   CHECK(udp_last[6]==1U && udp_last[10]==0U && udp_last[11]==0U && udp_last[12]==0U);
+  Request(2U,31U); (void)DAQ_TransportPoll();
+  for(count=0U;(count<8U)&&(uart6_status_pending!=0U);count++) { (void)DAQ_TransportPoll(); }
+  CHECK(uart6_status_pending==0U);
   for(i=3U;i<=4U;i++)
-  { Request(1U,i); (void)DAQ_TransportPoll(); CHECK(acquisition_active_gear==2U && acquisition_request_pending==0U); }
+  {
+    Request(1U,i); (void)DAQ_TransportPoll();
+    CHECK(acquisition_request_pending==1U && acquisition_active_gear==i-1U);
+    Acquisition_GearPoll(); (void)DAQ_TransportPoll();
+    CHECK(acquisition_active_gear==i && acquisition_adc_active_cycles==
+          ((i==3U)?28U:3U));
+    CHECK(udp_last[2]==3U && udp_last[3]==i);
+    set_group(200U+i,456U); source.gear=i; (void)DAQ_TransportPoll();
+    CHECK(udp_last[2]==1U && udp_last[5]==i && udp_last[6]==31U && udp_last[7]==50U);
+  }
   seq=ch1_uart_next_seq; Request(1U,1U); (void)DAQ_TransportPoll();
-  CHECK(acquisition_active_gear==2U); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
+  CHECK(acquisition_active_gear==4U); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==1U && acquisition_adc_active_cycles==480U && udp_last[3]==1U);
   CHECK(ch1_uart_next_seq==seq);
   Request(1U,2U); (void)DAQ_TransportPoll(); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
@@ -44,6 +56,6 @@ int main(void)
   (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==0U && acquisition_adc_active_cycles==480U);
   CHECK(daq_transport_active==0U && uart6_rx_active==1U && ch1_uart_next_seq==seq);
-  printf("PASS remote UDP CMD01 GEAR2/status/mask/SEQ integration: %u checks (host only)\n",checks);
+  printf("PASS remote UDP CMD01 GEAR2..4/status/mask/SEQ integration: %u checks (host only)\n",checks);
   return 0;
 }

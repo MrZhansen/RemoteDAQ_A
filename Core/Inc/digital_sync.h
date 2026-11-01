@@ -2,6 +2,16 @@
 #define DIGITAL_SYNC_H
 #include <stdint.h>
 
+/* GEAR3/GEAR4 execute the TIM2 fast path from ITCM on target: instruction
+ * fetches from flash at 7 wait states cannot meet the 972/390-cycle body
+ * budgets. The attribute is empty for host builds, so the same sources still
+ * compile with a desktop compiler and keep their signatures unchanged. */
+#if defined(__ICCARM__)
+#define DIGITAL_SYNC_FAST_CODE __ramfunc
+#else
+#define DIGITAL_SYNC_FAST_CODE
+#endif
+
 #define DIGITAL_SYNC_POINTS 100U
 #define DIGITAL_SYNC_HALF   50U
 #define DIGITAL_SYNC_MAX_PHASE_US 20U
@@ -12,13 +22,18 @@
 #define DIGITAL_SYNC_ERROR_REUSE  0x08U
 #define DIGITAL_SYNC_ERROR_CONFIG 0x10U
 
-/* Production profiles are 200/100 us. The offline candidate has a separate
- * accessor and is not evidence that a production GEAR2 is supported. */
+/* Single gear configuration table. GEAR2..4 are production UDP-only modes;
+ * the fields here are shared by acquisition, protocol and host tests. */
 typedef struct
 {
   uint32_t sample_interval_us;
   uint32_t max_phase_us;
   uint32_t max_body_us;
+  uint32_t adc_sample_cycles;
+  uint32_t max_phase_cycles;
+  uint32_t max_body_cycles;
+  uint32_t fast_isr;
+  uint32_t udp_required;
 } DigitalSyncTimingConfig;
 
 #define DIGITAL_SYNC_DETAIL_PHASE       0x01U
@@ -122,22 +137,25 @@ typedef struct
   volatile uint32_t sample_count;
   volatile uint32_t last_ndtr;
   volatile uint32_t last_phase_us;
+  volatile uint32_t last_phase_cycles;
   volatile uint32_t last_trigger;
   volatile uint32_t fault_detail;
   DigitalSyncTimingConfig timing; /* Change only while acquisition is stopped. */
 } DigitalSync;
 
-/* NULL for every unsupported gear, including GEAR2. */
+/* Return the single profile for GEAR 0..4, or NULL for an invalid gear. */
 const DigitalSyncTimingConfig *DigitalSync_GetTimingConfig(uint32_t gear);
-/* 144 cycles is a GEAR0-only experiment. CNT <= 4 means elapsed < 5 us
- * at the existing 1 MHz timer tick; this candidate still needs board testing. */
+/* 144 cycles remains a GEAR0-only experiment. GEAR2 returns its production
+ * 20 us/144-cycle profile; GEAR3/4 return their exact 28/3-cycle profiles. */
 const DigitalSyncTimingConfig *DigitalSync_GetTimingConfigForADC(uint32_t gear,
                                                                uint32_t sample_cycles);
-/* Internal 20 us/144-cycle candidate only; production lookups reject GEAR2. */
+/* Compatibility aliases for the isolated candidates; both now resolve to the
+ * same GEAR2 row in the single table. */
 const DigitalSyncTimingConfig *DigitalSync_GetOfflineTimingConfig(void);
 const DigitalSyncTimingConfig *DigitalSync_GetUDPCandidateTimingConfig(void);
 void DigitalSync_Init(DigitalSync *state);
 void DigitalSync_Fault(DigitalSync *state, uint32_t reason);
+DIGITAL_SYNC_FAST_CODE
 void DigitalSync_FaultWithDetail(DigitalSync *state, uint32_t reason, uint32_t detail);
 /* One call per TIM2 update; trigger is the TIM5 hardware event count.
  * phase is after GPIO, DMA NDTR and TIM5 reads (the checked end phase).
@@ -147,6 +165,13 @@ void DigitalSync_FaultWithDetail(DigitalSync *state, uint32_t reason, uint32_t d
  * IRQ priority and phase limit must ensure the current ADC pair is unfinished. */
 uint32_t DigitalSync_Record(DigitalSync *state, uint32_t trigger, uint32_t ndtr,
                             uint32_t phase, uint8_t bits);
+/* GEAR3/GEAR4 fast path. phase is elapsed DWT cycles from the first C
+ * instruction in TIM2_IRQHandler. This path records the data point and guards
+ * the configured cycle budget, without per-point diagnostic stores. */
+DIGITAL_SYNC_FAST_CODE
+uint32_t DigitalSync_RecordFast(DigitalSync *state, uint32_t trigger,
+                                uint32_t ndtr, uint32_t phase_cycles,
+                                uint8_t bits);
 /* A completed digital half must match the analog group and remain outside
  * the DMA's currently filling half, both before and after group copying. */
 uint32_t DigitalSync_HalfMatches(const DigitalSync *state, uint32_t half,

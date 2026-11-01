@@ -7,7 +7,7 @@ int main(void)
   uint8_t command[9];
   DAQ_ControlCommand parsed;
   uint32_t i,stops,frames,seq,submits,frequency;
-  const uint16_t targets[]={100U,1000U,5000U,10000U};
+  const uint16_t targets[]={100U,1000U,5000U,10000U,1000U};
   const uint16_t invalid[]={0U,99U,10001U,65535U};
   reset_control(); drain();
   CHECK(square_wave_actual_hz==1000U && wave_stop_calls==0U);
@@ -44,7 +44,7 @@ int main(void)
   inject_bytes(command+4U,5U); drain(); CHECK(square_wave_actual_hz==5000U);
   daq_transport_request=1U; (void)DAQ_TransportPoll(); (void)DAQ_TransportPoll();
   CHECK(daq_transport_active==1U && uart6_rx_active==0U);
-  for(i=0U;i<3U;i++)
+  for(i=0U;i<5U;i++)
   {
     Request(1U,i); (void)DAQ_TransportPoll(); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
     CHECK(acquisition_active_gear==i); submits=gear_request_calls;
@@ -59,6 +59,6 @@ int main(void)
     CHECK(udp_last[2]==1U && udp_last[5]==i && udp_last[6]==31U && udp_last[7]==50U);
     CHECK(ch1_uart_next_seq==(uint16_t)(seq+1U) && adc_running==1U && digital_sync.error==0U);
   }
-  printf("PASS CMD07 UART/UDP/status/G0-G2 integration: %u checks (host simulation, no board)\n",checks);
+  printf("PASS CMD07 UART/UDP/status/G0-G4 integration: %u checks (host simulation, no board)\n",checks);
   return 0;
 }

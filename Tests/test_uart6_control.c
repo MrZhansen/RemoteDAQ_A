@@ -60,12 +60,16 @@ static uint32_t acquisition_requested_gear, acquisition_request_pending;
 static uint32_t acquisition_last_switch_result, adc_error, dma_error;
 static uint32_t acquisition_udp_gear2_available, acquisition_udp_gear2_active;
 static uint32_t acquisition_adc_active_cycles=480U;
+static volatile uint32_t acquisition_fast_isr_active;
+static volatile uint32_t acquisition_fast_irq_budget_cycles;
+static volatile uint32_t acquisition_fast_budget_fail_count;
 static uint32_t gear_apply_failure, gear_request_calls;
 static HAL_StatusTypeDef gear_request_status=HAL_OK;
 static HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
 {
   gear_request_calls++;
   if (gear_request_status!=HAL_OK) { return gear_request_status; }
+  if (gear>4U) { return HAL_ERROR; }
   acquisition_requested_gear=gear; acquisition_request_pending=1U;
   return HAL_OK;
 }
@@ -78,8 +82,14 @@ static void Acquisition_GearPoll(void)
   if (gear_apply_failure!=0U)
   { adc_running=0U; acquisition_fault_latched=1U; return; }
   acquisition_active_gear=acquisition_requested_gear;
-  acquisition_udp_gear2_active=(acquisition_active_gear==2U)?1U:0U;
-  acquisition_adc_active_cycles=(acquisition_active_gear==2U)?144U:480U;
+  acquisition_udp_gear2_active=(acquisition_active_gear>=2U)?1U:0U;
+  acquisition_adc_active_cycles=(acquisition_active_gear==2U)?144U:
+      ((acquisition_active_gear==3U)?28U:
+       ((acquisition_active_gear==4U)?3U:480U));
+  acquisition_fast_isr_active=(acquisition_active_gear>=3U)?1U:0U;
+  acquisition_fast_irq_budget_cycles=(acquisition_active_gear==3U)?972U:
+      ((acquisition_active_gear==4U)?390U:0U);
+  acquisition_fast_budget_fail_count=0U;
   adc_snapshot_valid=0U;
 }
 static struct { uint32_t error; } digital_sync;
@@ -225,6 +235,8 @@ static void reset_control(void)
   abort_result=HAL_OK; dma_abort_result=HAL_OK; next_tx_result=HAL_OK;
   adc_running=1U; acquisition_active_gear=0U; acquisition_switching=0U;
   acquisition_fault_latched=0U; digital_sync.error=0U;
+  acquisition_fast_isr_active=0U; acquisition_fast_irq_budget_cycles=0U;
+  acquisition_fast_budget_fail_count=0U;
   acquisition_request_pending=0U; acquisition_requested_gear=0U;
   acquisition_last_switch_result=0U; gear_apply_failure=0U;
   gear_request_status=HAL_OK; adc_error=0U; dma_error=0U;

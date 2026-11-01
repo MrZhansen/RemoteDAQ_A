@@ -84,7 +84,10 @@ int main(void)
   CHECK(DigitalSync_GetTimingConfig(1U)->sample_interval_us==100U);
   CHECK(DigitalSync_GetTimingConfig(0U)->max_phase_us==20U);
   CHECK(DigitalSync_GetTimingConfigForADC(0U,144U)->max_phase_us==4U);
-  CHECK(DigitalSync_GetTimingConfig(2U)==NULL);
+  CHECK(DigitalSync_GetTimingConfig(2U)->sample_interval_us==20U);
+  CHECK(DigitalSync_GetTimingConfig(3U)->sample_interval_us==10U);
+  CHECK(DigitalSync_GetTimingConfig(4U)->sample_interval_us==2U);
+  CHECK(DigitalSync_GetTimingConfig(UINT32_MAX)==NULL);
 
   reset_model();
   timing_phases[0]=1U; timing_phases[1]=2U; timing_phases[2]=3U; timing_phases[3]=4U;
@@ -103,7 +106,7 @@ int main(void)
   CHECK(digital_timing.gear[1].tim2_c.count==1U && digital_sync.error==0U);
   CHECK(DigitalTiming_Group(&digital_timing,2U)==&digital_timing.offline);
   CHECK(DigitalTiming_Group(&digital_timing,UINT32_MAX)==&digital_timing.inactive);
-  CHECK(DigitalSync_GetTimingConfig(2U)==NULL); /* Not a third sampling gear. */
+  CHECK(DigitalSync_GetTimingConfig(2U)->adc_sample_cycles==144U);
 
   reset_model(); timer2.CNT=1U; generate(50U,0U);
   fake_dwt.CYCCNT=100U; timing_publish_cost=100U;

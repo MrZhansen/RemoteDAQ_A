@@ -36,7 +36,7 @@ static DAQ_FrameStatus BuildDataFrame(const uint16_t *ch1, const uint16_t *ch2,
   uint16_t crc;
   size_t offset;
 
-  if ((gear > 2U) || (mask > 0x1FU) ||
+  if ((gear > 4U) || (mask > 0x1FU) ||
       (((mask & 0x01U) != 0U) && (ch1 == NULL)) ||
       (((mask & 0x02U) != 0U) && (ch2 == NULL)) ||
       (((mask & 0x1CU) != 0U) && (dig == NULL)) ||
@@ -145,7 +145,7 @@ DAQ_FrameStatus DAQ_BuildSelectedFrameForGear(
     uint32_t channel_mask, uint16_t sequence, uint8_t *frame,
     size_t frame_capacity)
 {
-  if ((gear > 1U) || (channel_mask > 0x1FU)) { return DAQ_FRAME_BAD_ARGUMENT; }
+  if ((gear > 4U) || (channel_mask > 0x1FU)) { return DAQ_FRAME_BAD_ARGUMENT; }
   return BuildDataFrame(ch1, ch2, dig, (uint8_t)channel_mask, (uint8_t)gear,
                         sequence, frame, frame_capacity);
 }

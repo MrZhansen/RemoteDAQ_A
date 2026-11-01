@@ -74,6 +74,7 @@ typedef struct
 #define CH1_STALL_TIMEOUT_MS    100U
 
 #define ACQ_GEAR_INVALID        0xFFFFFFFFUL
+#define ACQ_GEAR_COUNT          5U
 #define ACQ_SWITCH_OK           0U
 #define ACQ_SWITCH_BAD_GEAR     1U
 #define ACQ_SWITCH_CLOCK        2U
@@ -199,6 +200,8 @@ volatile DigitalSyncTimingDiagnostics digital_timing;
 /* End synchronous digital state. */
 
 /* Acquisition gear state. */
+typedef DigitalSyncTimingConfig AcquisitionGearProfile;
+
 volatile uint32_t acquisition_active_gear = ACQ_GEAR_INVALID;
 volatile uint32_t acquisition_requested_gear = 0U;
 volatile uint32_t acquisition_request_pending = 0U;
@@ -233,6 +236,13 @@ volatile uint32_t acquisition_adc_switch_fail_count = 0U;
 volatile uint32_t acquisition_adc_rank1_status = 0xFFFFFFFFUL;
 volatile uint32_t acquisition_adc_rank2_status = 0xFFFFFFFFUL;
 static uint32_t acquisition_adc_last_request = 480U;
+volatile uint32_t acquisition_fast_isr_active = 0U;
+volatile uint32_t acquisition_fast_irq_last_cycles = 0U;
+volatile uint32_t acquisition_fast_irq_max_cycles = 0U;
+volatile uint32_t acquisition_fast_irq_budget_cycles = 0U;
+volatile uint32_t acquisition_fast_phase_last_cycles = 0U;
+volatile uint32_t acquisition_fast_phase_max_cycles = 0U;
+volatile uint32_t acquisition_fast_budget_fail_count = 0U;
 /* Finite offline experiment state; no IRQ writer and no UART protocol entry. */
 volatile AcquisitionOfflineDiagnostics offline;
 volatile uint32_t offline_request_groups = 0U;
@@ -291,6 +301,10 @@ volatile uint32_t adc_running = 0U;
  * 4 clock done, 5 peripheral init done, 6 buffer done, 7 DMA armed, 8 running. */
 volatile uint32_t adc_startup_stage = 0U;
 volatile uint32_t adc_startup_ccr = 0U;
+/* Fast-gear instruction-fetch evidence: 1 = Cortex-M7 L1 I-cache enabled,
+ * FLASH->ACR shows LATENCY/PRFTEN/ARTEN after the clock switch. */
+volatile uint32_t adc_startup_icache = 0U;
+volatile uint32_t adc_startup_flash_acr = 0U;
 /* HAL status: 0=HAL_OK; 0xFFFFFFFF means the call has not run. */
 volatile uint32_t adc_dma_start_status = 0xFFFFFFFFUL;
 volatile uint32_t tim2_start_status = 0xFFFFFFFFUL;
@@ -465,6 +479,7 @@ static void CH1_PublishGroup(uint32_t offset);
 static void Full_PublishGroup(uint32_t offset);
 static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t trigger);
 static HAL_StatusTypeDef DigitalCounter_Init(void);
+static const AcquisitionGearProfile *Acquisition_GetGearProfile(uint32_t gear);
 static void Acquisition_UDPPolicyPoll(void);
 static HAL_StatusTypeDef SquareWave_ChangeFrequency(uint32_t frequency_hz);
 static void Trigger_Reset(void);
@@ -947,10 +962,10 @@ static void UART6_DispatchControl(const DAQ_ControlCommand *command)
   else if (command->command == DAQ_CMD_SET_GEAR)
   {
     uart6_gear_request_count++;
-    /* GEAR2 is a UDP-only feature. GEAR3/4 remain protocol-valid but
-     * unsupported; UART never submits a 50 ksample/s request. */
-    if ((command->parameter > 2U) ||
-        ((command->parameter == 2U) && (acquisition_udp_gear2_available == 0U)))
+    /* GEAR2..4 are UDP-only production modes. UART6 cannot carry their
+     * high-rate data stream, so it never submits these requests. */
+    if ((command->parameter >= ACQ_GEAR_COUNT) ||
+        ((command->parameter >= 2U) && (acquisition_udp_gear2_available == 0U)))
     {
       uart6_control_unsupported_count++;
       uart6_gear_unsupported_count++;
@@ -1191,6 +1206,7 @@ static uint32_t Acquisition_Stop(void)
   HAL_NVIC_DisableIRQ(DMA2_Stream0_IRQn);
   HAL_NVIC_DisableIRQ(ADC_IRQn);
   adc_running = 0U;
+  acquisition_fast_isr_active = 0U;
   __DSB();
   if (offline.state == OFFLINE_RESTORING)
   {
@@ -1249,6 +1265,8 @@ static HAL_StatusTypeDef Acquisition_ConfigureADC(uint32_t sample_cycles)
       ((hdma_adc3.Instance->CR & DMA_SxCR_EN) != 0U)) { return HAL_BUSY; }
   if (sample_cycles == 480U) { sampling = ADC_SAMPLETIME_480CYCLES; }
   else if (sample_cycles == 144U) { sampling = ADC_SAMPLETIME_144CYCLES; }
+  else if (sample_cycles == 28U) { sampling = ADC_SAMPLETIME_28CYCLES; }
+  else if (sample_cycles == 3U) { sampling = ADC_SAMPLETIME_3CYCLES; }
   else { return HAL_ERROR; }
   channel.Channel = ADC_CHANNEL_0;
   channel.Rank = ADC_REGULAR_RANK_1;
@@ -1281,20 +1299,25 @@ static HAL_StatusTypeDef Acquisition_ApplyConfiguration(uint32_t gear, uint32_t 
   uint32_t old_samples;
   uint32_t old_errors;
   HAL_StatusTypeDef status;
+  const AcquisitionGearProfile *profile = Acquisition_GetGearProfile(gear);
   const DigitalSyncTimingConfig *timing = DigitalSync_GetTimingConfigForADC(gear, sample_cycles);
-  /* The existing stopped reconfiguration is shared by isolated experiments
-   * and the UDP-only production request. No UART path can arm GEAR2. */
-  if ((gear == 2U) && (sample_cycles == 144U))
-  {
-    if (offline.state == OFFLINE_STARTING)
-    { timing = DigitalSync_GetOfflineTimingConfig(); }
-    else if (udp_trial.state == UDP_TRIAL_STARTING)
-    { timing = DigitalSync_GetUDPCandidateTimingConfig(); }
-    else if ((acquisition_udp_gear2_starting != 0U) &&
-             (acquisition_udp_gear2_available != 0U))
-    { timing = DigitalSync_GetUDPCandidateTimingConfig(); }
-  }
-  if (timing == NULL) { return HAL_ERROR; }
+  /* Reject a mismatched pair before stopping healthy acquisition. GEAR0/144
+   * is the sole non-default ADC experiment; all other pairs come from the
+   * single production table. */
+  if ((profile == NULL) || (timing == NULL) ||
+      ((sample_cycles != profile->adc_sample_cycles) &&
+       !((gear == 0U) && (sample_cycles == 144U))) ||
+      (timing->sample_interval_us != profile->sample_interval_us) ||
+      (!((gear == 0U) && (sample_cycles == 144U)) &&
+       ((timing->max_phase_cycles != profile->max_phase_cycles) ||
+        (timing->max_body_cycles != profile->max_body_cycles))))
+  { return HAL_ERROR; }
+  if ((gear >= 2U) &&
+      !(((gear == 2U) && (offline.state == OFFLINE_STARTING)) ||
+        ((gear == 2U) && (udp_trial.state == UDP_TRIAL_STARTING)) ||
+        ((acquisition_udp_gear2_starting != 0U) &&
+         (acquisition_udp_gear2_available != 0U))))
+  { return HAL_ERROR; }
   reason = Acquisition_Stop();
   if (reason != ACQ_SWITCH_OK)
   {
@@ -1402,6 +1425,12 @@ static HAL_StatusTypeDef Acquisition_ApplyConfiguration(uint32_t gear, uint32_t 
   acquisition_adc_active_cycles = sample_cycles;
   acquisition_adc_test_mode = (sample_cycles == 144U) ? 1U : 0U;
   acquisition_sample_interval_us = timing->sample_interval_us;
+  acquisition_fast_isr_active = profile->fast_isr;
+  acquisition_fast_irq_last_cycles = 0U;
+  acquisition_fast_irq_max_cycles = 0U;
+  acquisition_fast_irq_budget_cycles = profile->max_body_cycles;
+  acquisition_fast_phase_last_cycles = 0U;
+  acquisition_fast_phase_max_cycles = 0U;
   acquisition_switching = 0U;
   adc_startup_stage = 7U;
   adc_running = 1U;
@@ -1426,13 +1455,16 @@ static HAL_StatusTypeDef Acquisition_ApplyConfiguration(uint32_t gear, uint32_t 
   return HAL_OK;
 }
 
+static const AcquisitionGearProfile *Acquisition_GetGearProfile(uint32_t gear)
+{
+  return DigitalSync_GetTimingConfig(gear);
+}
+
 static HAL_StatusTypeDef Acquisition_ApplyGear(uint32_t gear)
 {
-  uint32_t cycles = acquisition_adc_active_cycles;
-  if (cycles == ACQ_GEAR_INVALID) { cycles = 480U; }
-  if (gear == 2U) { cycles = 144U; }
-  else if (acquisition_udp_gear2_active != 0U) { cycles = 480U; }
-  return Acquisition_ApplyConfiguration(gear, cycles);
+  const AcquisitionGearProfile *profile = Acquisition_GetGearProfile(gear);
+  if (profile == NULL) { return HAL_ERROR; }
+  return Acquisition_ApplyConfiguration(gear, profile->adc_sample_cycles);
 }
 
 __root HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
@@ -1441,22 +1473,25 @@ __root HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)
   if ((offline.state == OFFLINE_STARTING) || (offline.state == OFFLINE_RUNNING) ||
       (offline.state == OFFLINE_RESTORING) || (offline.state == OFFLINE_FAULT))
   { return HAL_BUSY; }
-  if (gear > 2U)
+  if (gear >= ACQ_GEAR_COUNT)
   {
     acquisition_last_switch_result = ACQ_SWITCH_BAD_GEAR;
     acquisition_switch_fail_count++;
     return HAL_ERROR;
   }
-  if ((gear == 2U) && (acquisition_udp_gear2_available == 0U))
+  if ((gear >= 2U) && (acquisition_udp_gear2_available == 0U))
   {
     acquisition_last_switch_result = ACQ_SWITCH_UDP_REQUIRED;
     acquisition_switch_fail_count++;
     return HAL_ERROR;
   }
-  if ((gear == 2U) && (acquisition_udp_gear2_active == 0U) &&
-      ((acquisition_adc_active_cycles != 480U) ||
-       (acquisition_adc_requested_cycles != 480U) ||
-       (acquisition_adc_request_pending != 0U)))
+  /* GEAR0/144 is the only ADC experiment that may not be mixed with a high
+   * gear. A healthy high gear legitimately runs at 28/3 cycles, so 480 is not
+   * a valid precondition when its UDP ownership bit is being re-established. */
+  if ((gear >= 2U) && (acquisition_udp_gear2_active == 0U) &&
+      ((acquisition_adc_active_cycles == 144U) ||
+       ((acquisition_adc_request_pending != 0U) &&
+        (acquisition_adc_requested_cycles == 144U))))
   {
     acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
     acquisition_switch_fail_count++;
@@ -1560,22 +1595,22 @@ static void Acquisition_GearPoll(void)
   { return; }
   acquisition_last_request = request;
   acquisition_request_pending = 0U;
-  if (request > 2U)
+  if (request >= ACQ_GEAR_COUNT)
   {
     acquisition_last_switch_result = ACQ_SWITCH_BAD_GEAR;
     acquisition_switch_fail_count++;
     return; /* Invalid requests must not interrupt healthy acquisition. */
   }
-  if ((request == 2U) && (acquisition_udp_gear2_available == 0U))
+  if ((request >= 2U) && (acquisition_udp_gear2_available == 0U))
   {
     acquisition_last_switch_result = ACQ_SWITCH_UDP_REQUIRED;
     acquisition_switch_fail_count++;
     return;
   }
-  if ((request == 2U) && (acquisition_udp_gear2_active == 0U) &&
-      ((acquisition_adc_active_cycles != 480U) ||
-       (acquisition_adc_requested_cycles != 480U) ||
-       (acquisition_adc_request_pending != 0U)))
+  if ((request >= 2U) && (acquisition_udp_gear2_active == 0U) &&
+      ((acquisition_adc_active_cycles == 144U) ||
+       ((acquisition_adc_request_pending != 0U) &&
+        (acquisition_adc_requested_cycles == 144U))))
   {
     acquisition_last_switch_result = ACQ_SWITCH_ADC_CONFLICT;
     acquisition_switch_fail_count++;
@@ -1598,13 +1633,13 @@ static void Acquisition_GearPoll(void)
   if ((request == acquisition_active_gear) && (adc_running != 0U))
   { acquisition_last_switch_result = ACQ_SWITCH_OK; return; }
   leaving_udp_gear2 = acquisition_udp_gear2_active;
-  acquisition_udp_gear2_starting = (request == 2U) ? 1U : 0U;
+  acquisition_udp_gear2_starting = (request >= 2U) ? 1U : 0U;
   status = Acquisition_ApplyGear(request);
   acquisition_udp_gear2_starting = 0U;
   if (status == HAL_OK)
   {
-    acquisition_udp_gear2_active = (request == 2U) ? 1U : 0U;
-    if ((leaving_udp_gear2 != 0U) && (request != 2U))
+    acquisition_udp_gear2_active = (request >= 2U) ? 1U : 0U;
+    if ((leaving_udp_gear2 != 0U) && (request < 2U))
     {
       acquisition_adc_requested_cycles = 480U;
       acquisition_adc_last_request = 480U;
@@ -1630,7 +1665,8 @@ static void Acquisition_UDPPolicyPoll(void)
       (adc_running != 0U) && (acquisition_fault_latched == 0U) &&
       (adc_error == 0U) && (adc_hal_error == 0U) && (dma_error == 0U) &&
       (digital_sync.error == 0U)) ? 1U : 0U;
-  if ((available != 0U) && (acquisition_requested_gear == 2U) &&
+  if ((available != 0U) && (acquisition_requested_gear >= 2U) &&
+      (acquisition_requested_gear < ACQ_GEAR_COUNT) &&
       (acquisition_udp_gear2_active == 0U))
   {
     /* Same entry clock constraints as the already exercised UDP trial;
@@ -1945,6 +1981,7 @@ static uint32_t Acquisition_OfflinePoll(void)
 
 /* Failure-only path: UIE is disabled before taking the first snapshot.
  * Register reads are sequential, not an atomic hardware capture. */
+DIGITAL_SYNC_FAST_CODE
 static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t trigger)
 {
   if (digital_timing.fault.valid != 0U) { return; }
@@ -2033,6 +2070,48 @@ void Acquisition_TIM2Update(uint32_t irq_entry_phase)
         gpio_phase, phase_after, digital_sync.timing.sample_interval_us,
         digital_sync.timing.max_phase_us, sync_error);
   }
+}
+
+DIGITAL_SYNC_FAST_CODE
+void Acquisition_TIM2FastUpdate(uint32_t irq_entry_cycles, uint32_t entry_ndtr)
+{
+  uint32_t g = GPIOG->IDR;
+  uint32_t port_i = GPIOI->IDR;
+  /* Captured in TIM2_IRQHandler before the C prologue: the GEAR4 ADC pair
+   * finishes 1.11 us after the trigger, so the write pointer must be sampled
+   * as close to the trigger as possible instead of after the GPIO reads. */
+  uint32_t ndtr = entry_ndtr;
+  uint32_t trigger = TIM5->CNT;
+  uint32_t phase_cycles = DWT->CYCCNT - irq_entry_cycles;
+  uint32_t elapsed;
+  uint8_t bits = (uint8_t)(((g >> 6U) & 3U) | (((port_i >> 3U) & 1U) << 2U));
+
+  acquisition_fast_phase_last_cycles = phase_cycles;
+  if (phase_cycles > acquisition_fast_phase_max_cycles)
+  { acquisition_fast_phase_max_cycles = phase_cycles; }
+  if (adc_running == 0U)
+  {
+    DigitalSync_FaultWithDetail(&digital_sync, DIGITAL_SYNC_ERROR_LATE,
+                                DIGITAL_SYNC_DETAIL_NOT_RUNNING);
+  }
+  else if (DigitalSync_RecordFast(&digital_sync, trigger, ndtr, phase_cycles, bits) == 0U)
+  {
+    __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_UPDATE);
+  }
+
+  elapsed = DWT->CYCCNT - irq_entry_cycles;
+  acquisition_fast_irq_last_cycles = elapsed;
+  if (elapsed > acquisition_fast_irq_max_cycles)
+  { acquisition_fast_irq_max_cycles = elapsed; }
+  if ((acquisition_fast_irq_budget_cycles != 0U) &&
+      (elapsed >= acquisition_fast_irq_budget_cycles))
+  {
+    acquisition_fast_budget_fail_count++;
+    DigitalSync_FaultWithDetail(&digital_sync, DIGITAL_SYNC_ERROR_LATE,
+                                DIGITAL_SYNC_DETAIL_BODY_BUDGET);
+    __HAL_TIM_DISABLE_IT(&htim2, TIM_IT_UPDATE);
+  }
+  if (digital_sync.error != 0U) { DigitalSync_CaptureFault(1U, ndtr, trigger); }
 }
 
 /* Continuous UDP qualification owner. Disabled at reset; no protocol command
@@ -2168,15 +2247,21 @@ static void DAQ_UDPTrialPoll(void)
 }
 static uint32_t DAQ_TransportGetStatus(DAQ_StatusState *state)
 {
-  if (acquisition_active_gear != 2U) { return UART6_GetStatus(state); }
+  const DigitalSyncTimingConfig *profile;
+  if (acquisition_active_gear < 2U) { return UART6_GetStatus(state); }
+  profile = DigitalSync_GetTimingConfig(acquisition_active_gear);
   if (((udp_trial.state != UDP_TRIAL_RUNNING) &&
        (acquisition_udp_gear2_active == 0U)) || (daq_transport_active != 1U) ||
-      (acquisition_adc_active_cycles != 144U) ||
+      (profile == NULL) || (acquisition_adc_active_cycles != profile->adc_sample_cycles) ||
       (adc_running == 0U) || (acquisition_fault_latched != 0U) ||
       (adc_error != 0U) || (dma_error != 0U) || (digital_sync.error != 0U) ||
       (square_wave_running == 0U) || (square_wave_actual_hz < 100U) ||
-      (square_wave_actual_hz > 10000U)) { return 0U; }
-  state->gear = 2U; state->channel_mask = daq_active_channel_mask;
+      (square_wave_actual_hz > 10000U) ||
+      ((profile->fast_isr != 0U) &&
+       ((acquisition_fast_isr_active == 0U) ||
+        (acquisition_fast_irq_budget_cycles != profile->max_body_cycles) ||
+        (acquisition_fast_budget_fail_count != 0U)))) { return 0U; }
+  state->gear = acquisition_active_gear; state->channel_mask = daq_active_channel_mask;
   state->trigger_source = daq_trigger_source;
   state->trigger_mode = daq_trigger_mode;
   state->trigger_level = daq_trigger_level;
@@ -2301,6 +2386,14 @@ int main(void)
   }
   __DSB();
   __ISB();
+  /* Cortex-M7 L1 instruction cache. GEAR3/4 run the TIM2 fast path from
+   * flash at 7 wait states; the 972/390-cycle body budgets are unreachable
+   * without it, and ART prefetch alone does not accelerate the AXIM alias at
+   * 0x08000000. D-Cache stays disabled so DMA buffers remain coherent. */
+  SCB_EnableICache();
+  __DSB();
+  __ISB();
+  adc_startup_icache = ((SCB->CCR & SCB_CCR_IC_Msk) != 0U) ? 1U : 0U;
   adc_startup_stage = 2U;
 
   /* USER CODE END 1 */
@@ -2322,6 +2415,7 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  adc_startup_flash_acr = FLASH->ACR; /* LATENCY + PRFTEN + ARTEN evidence */
   adc_startup_stage = 4U;
 
   /* USER CODE END SysInit */

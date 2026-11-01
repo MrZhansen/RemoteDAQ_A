@@ -169,6 +169,7 @@ if (-not $syncState.Success) { throw 'Missing synchronous digital state.' }
 $fullPublish = Get-FunctionText $mainSource "static void Full_PublishGroup(uint32_t offset)`r`n{"
 $fullReader = Get-FunctionText $mainSource '__root HAL_StatusTypeDef Full_GetSnapshot(Full_Snapshot *snapshot)'
 $capture = Get-FunctionText $mainSource "void Acquisition_TIM2Update(uint32_t irq_entry_phase)`r`n{"
+$fastCapture = Get-FunctionText $mainSource "void Acquisition_TIM2FastUpdate(uint32_t irq_entry_cycles, uint32_t entry_ndtr)`r`n{"
 $faultCapture = Get-FunctionText $mainSource "static void DigitalSync_CaptureFault(uint32_t source, uint32_t ndtr, uint32_t trigger)`r`n{"
 $halfCallback = Get-FunctionText $mainSource "void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)`r`n{"
 $fullCallback = Get-FunctionText $mainSource "void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)`r`n{"
@@ -177,6 +178,7 @@ $timerIrq = Get-FunctionText $irqSource "void TIM2_IRQHandler(void)`r`n{"
 $dmaIrq = Get-FunctionText $irqSource "void DMA2_Stream0_IRQHandler(void)`r`n{"
 # Host-only scripted register timestamps. No hooks enter the production ISR.
 $capture = $capture.Replace("DWT->CYCCNT", "timing_read_cycles()").Replace("TIM2->CNT", "timing_read_phase()")
+$fastCapture = $fastCapture.Replace("DWT->CYCCNT", "timing_read_cycles()")
 $timerIrq = $timerIrq.Replace("DWT->CYCCNT", "timing_read_cycles()").Replace("TIM2->CNT", "timing_read_phase()")
 $dmaIrq = $dmaIrq.Replace("DWT->CYCCNT", "timing_read_cycles()")
 $halfCallback = $halfCallback.Replace("DWT->CYCCNT", "timing_read_cycles()")
@@ -187,7 +189,7 @@ $fullPublish = $fullPublish.Replace(
 $fullReader = $fullReader.Replace('candidate.dig[i] = full_published_snapshot.dig[i];',
     'candidate.dig[i] = full_published_snapshot.dig[i]; FULL_READ_TEST_HOOK(i);')
 [IO.File]::WriteAllText((Join-Path $testOutput 'full_sync_under_test.inc'),
-    ($faultCapture + "`r`n" + $publish + "`r`n" + $fullPublish + "`r`n" + $fullReader + "`r`n" + $capture + "`r`n" + $timerIrq + "`r`n" + $halfCallback + "`r`n" + $fullCallback + "`r`n" + $dmaIrq))
+    ($faultCapture + "`r`n" + $publish + "`r`n" + $fullPublish + "`r`n" + $fullReader + "`r`n" + $capture + "`r`n" + $fastCapture + "`r`n" + $timerIrq + "`r`n" + $halfCallback + "`r`n" + $fullCallback + "`r`n" + $dmaIrq))
 $gearState = [regex]::Match($mainSource,
     '(?s)/\* Acquisition gear state\. \*/(.*?)/\* End acquisition gear state\. \*/')
 [IO.File]::WriteAllText((Join-Path $testOutput 'gear_state.inc'), $gearState.Groups[1].Value)
@@ -208,6 +210,8 @@ $gearFunctions = @(
 {"),
     (Get-FunctionText $mainSource "static HAL_StatusTypeDef Acquisition_ApplyConfiguration(uint32_t gear, uint32_t sample_cycles)
 {"),
+    (Get-FunctionText $mainSource "static const AcquisitionGearProfile *Acquisition_GetGearProfile(uint32_t gear)
+{"),
     (Get-FunctionText $mainSource "static HAL_StatusTypeDef Acquisition_ApplyGear(uint32_t gear)
 {"),
     (Get-FunctionText $mainSource '__root HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear)'),
@@ -217,8 +221,11 @@ $gearFunctions = @(
     (Get-FunctionText $mainSource "static void Acquisition_GearPoll(void)
 {")
 )
-[IO.File]::WriteAllText((Join-Path $testOutput 'gear_under_test.inc'), ($gearFunctions -join "
-"))
+[IO.File]::WriteAllText((Join-Path $testOutput 'gear_under_test.inc'),
+    ("static const AcquisitionGearProfile *Acquisition_GetGearProfile(uint32_t gear);" +
+     [Environment]::NewLine + ($gearFunctions -join [Environment]::NewLine)))
+$gear34Status = Get-FunctionText $mainSource "static uint32_t DAQ_TransportGetStatus(DAQ_StatusState *state)`r`n{"
+[IO.File]::WriteAllText((Join-Path $testOutput 'gear34_status_source.inc'), $gear34Status)
 $fullExe = Join-Path $testOutput 'test_full_sync.exe'
 & $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' `
     '-I' (Join-Path $projectRoot 'Core/Inc') '-I' $testOutput `
@@ -237,6 +244,15 @@ $gearExe = Join-Path $testOutput 'test_gear.exe'
 if ($LASTEXITCODE -ne 0) { throw "Gear host compile failed: $LASTEXITCODE" }
 & $gearExe 2>&1 | ForEach-Object { $_ }
 if ($LASTEXITCODE -ne 0) { throw "Gear host tests failed: $LASTEXITCODE" }
+$gear34Exe = Join-Path $testOutput 'test_gear34.exe'
+& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' `
+    '-I' (Join-Path $projectRoot 'Core/Inc') '-I' $testOutput `
+    (Join-Path $projectRoot 'Core/Src/daq_protocol.c') `
+    (Join-Path $projectRoot 'Core/Src/digital_sync.c') `
+    (Join-Path $PSScriptRoot 'test_gear34.c') '-o' $gear34Exe 2>&1 | ForEach-Object { $_ }
+if ($LASTEXITCODE -ne 0) { throw "GEAR3/4 host compile failed: $LASTEXITCODE" }
+& $gear34Exe 2>&1 | ForEach-Object { $_ }
+if ($LASTEXITCODE -ne 0) { throw "GEAR3/4 host tests failed: $LASTEXITCODE" }
 $adcSamplingExe = Join-Path $testOutput 'test_adc_sampling.exe'
 & $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' `
     '-I' (Join-Path $projectRoot 'Core/Inc') '-I' $testOutput `
@@ -359,4 +375,5 @@ foreach ($suite in @('offline_gear2','offline_uart')) {
     & $exe 2>&1 | ForEach-Object { $_ }
     if ($LASTEXITCODE -ne 0) { throw ("Offline host tests failed: " + $suite + ' ' + $LASTEXITCODE) }
 }
+& (Join-Path $PSScriptRoot 'test_fast_isr_fetch_config.ps1')
 Write-Output 'PASS all host software tests; UART is simulated; no board access.'

@@ -1,3 +1,67 @@
+# GEAR3/GEAR4 software/build checkpoint — 2026-10-31
+
+Status: software and build complete; real-board acceptance is not complete.
+The new HEX has not been flashed by this checkpoint.
+
+Implemented a single production timing table for GEAR0-GEAR4:
+
+| GEAR | Interval | ADC sample cycles | TIM2 PSC/ARR | UDP required | ISR path |
+|---|---:|---:|---:|---|---|
+| 0 | 200 us | 480 | 107/199 | no | normal |
+| 1 | 100 us | 480 | 107/99 | no | normal |
+| 2 | 20 us | 144 | 107/19 | yes | normal |
+| 3 | 10 us | 28 | 107/9 | yes | fast |
+| 4 | 2 us | 3 | 107/1 | yes | fast |
+
+ADC rank order remains rank1 PA0/ADC3_IN0 and rank2 PF10/ADC3_IN8.
+GEAR2-GEAR4 execute only from a healthy UDP owner and never from UART6's
+high-rate data path. Switching stops acquisition, discards the old partial
+digital half and preserves group/sequence history. GEAR3/GEAR4 use a reduced
+TIM2 path with inclusive phase limits of 540/216 cycles and strict body limits
+of 972/390 cycles. A violation disables TIM2 update interrupts and latches the
+fault; thresholds are not relaxed to make a run pass.
+
+Host evidence on 2026-10-31:
+
+- Full regression passed, including the new GEAR3/GEAR4 suite with 1,505 checks
+  for exact ADC/TIM2 rows, UDP gating, partial-half discard, frame CRC/GEAR,
+  status fail-closed behavior, budget boundaries and G4-to-G0 restoration.
+- Network integration passed: 300 real-LwIP/fake-Ethernet checks, 664 selected
+  UART/UDP checks, 19 Ethernet lifecycle/fault scenarios and 13,159 continuous
+  UDP GEAR2 checks.
+- Network lifecycle passed both host layout branches, all seven init/handshake
+  fault scenarios and the 45-check CMD06 pending/ARP scheduling case. Targeted
+  network regression passed RX/TX fault isolation, padding, identity gating and
+  2,768 offline UDP interoperability checks.
+- CMD07 passed 109 TIM3/CMD07 checks and 264 UART/UDP/status/G0-G4 checks.
+- Remote control passed 4,653 production GEAR2-G4 policy/config/restore checks,
+  127 CMD01/status/mask/SEQ integration checks and 13,159 continuous UDP checks.
+- Source-derived nominal sampling envelope passed 334 checks. This is not an
+  MCU timing, oscillator-accuracy, signal-quality or throughput measurement.
+
+IAR Command Line Build V8.2.1.5703 rebuilt configuration `RemoteDAQ_A` with
+0 errors and 0 warnings. The generated HEX at
+`EWARM/RemoteDAQ_A/Exe/RemoteDAQ_A.hex` has SHA-256
+`49E00FE8CA57B9AB7853B449710252D8876296BF89644AF5A178C91EB443E3F0`.
+MAP totals are 43,986 bytes readonly code, 1,938 bytes readonly data and
+54,419 bytes readwrite data plus 400 absolute. `adc_dma_buffer` remains at
+`0x20010000` with size `0x190`, `ethernet_dma` remains at `0x20018000` with
+size `0x4a00`, and CSTACK remains 4 KiB.
+
+Pending hardware gates:
+
+- Flash this exact HEX only after explicit operator approval and without a full
+  chip erase.
+- GEAR3: status GEAR=3, 28-cycle ADC on both ranks, 10 s of approximately
+  20,000 ADC groups and 1,000,000 digital samples, all errors/budgets clear,
+  260-byte frame CRC/SEQ/mask checks, and CH1/D1 rising-edge loopback triggers.
+- GEAR4: status GEAR=4, 3-cycle ADC on both ranks, 10 s of approximately
+  100,000 ADC groups and 5,000,000 digital samples, TIM2 body below 390 cycles,
+  all errors clear, frame checks, and CH1/D1 triggers at 1/5/10 kHz PB4.
+- Restore GEAR4->3->2->1->0 and recheck CMD07, UDP, trigger and acquisition.
+
+---
+
 # Trigger software/build checkpoint — 2026-10-31
 
 Implemented CMD03/04/05 runtime configuration and a main-context trigger

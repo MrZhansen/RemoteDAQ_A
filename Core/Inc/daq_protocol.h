@@ -55,7 +55,7 @@ DAQ_FrameStatus DAQ_BuildFullFrameForGear(
     const uint8_t dig[DAQ_ANALOG_SAMPLE_COUNT], uint32_t gear,
     uint16_t sequence, uint8_t *frame, size_t frame_capacity);
 
-/* GEAR 0/1, CH_MASK 0..0x1F. Disabled fields are zero; DIG preserves
+/* GEAR 0..4, CH_MASK 0..0x1F. Disabled fields are zero; DIG preserves
  * bit0=D1, bit1=D2, bit2=D3 and only clears bits for disabled channels.
  * Only enabled inputs need non-NULL arrays with valid 50-point samples.
  * Mask zero accepts NULL inputs and still creates a complete 260-byte frame.
@@ -67,9 +67,8 @@ DAQ_FrameStatus DAQ_BuildSelectedFrameForGear(
     uint32_t channel_mask, uint16_t sequence, uint8_t *frame,
     size_t frame_capacity);
 
-/* Internal UDP qualification encoder, fixed GEAR=2. Existing public gear
- * builders still reject 2. Caller must own a coherent candidate snapshot;
- * this function neither enables hardware nor advertises CMD01 support. */
+/* Internal fixed-GEAR2 encoder retained for the isolated qualification path.
+ * The general gear builder also supports 2..4 for production high-rate UDP. */
 DAQ_FrameStatus DAQ_BuildUDPGEAR2CandidateFrame(const uint16_t *ch1,
     const uint16_t *ch2, const uint8_t *dig, uint32_t channel_mask,
     uint16_t sequence, uint8_t *frame, size_t frame_capacity);

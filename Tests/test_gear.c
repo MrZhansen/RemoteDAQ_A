@@ -14,6 +14,8 @@
 #define ADC_CR2_ADON 1U
 #define ADC_SAMPLETIME_480CYCLES 7U
 #define ADC_SAMPLETIME_144CYCLES 6U
+#define ADC_SAMPLETIME_28CYCLES 2U
+#define ADC_SAMPLETIME_3CYCLES 0U
 #define ADC_CHANNEL_0 0U
 #define ADC_CHANNEL_8 8U
 #define ADC_REGULAR_RANK_1 1U
@@ -171,7 +173,8 @@ static HAL_StatusTypeDef HAL_ADC_ConfigChannel(ADC_HandleTypeDef *h, ADC_Channel
   CHECK(full_snapshot_valid==0U && adc_snapshot_valid==0U);
   CHECK(c->Rank==1U || c->Rank==2U);
   CHECK(c->Channel==((c->Rank==1U)?0U:8U));
-  CHECK(c->SamplingTime==6U || c->SamplingTime==7U);
+  CHECK(c->SamplingTime==0U || c->SamplingTime==2U ||
+        c->SamplingTime==6U || c->SamplingTime==7U);
   if(c->Rank==1U) { adc_last_sampling=c->SamplingTime; }
   CHECK(c->SamplingTime==adc_last_sampling && c->Offset==0U);
   adc_config_count++;
@@ -266,6 +269,10 @@ static void setup(void)
   acquisition_adc_last_switch_result=ACQ_GEAR_INVALID;
   acquisition_adc_switch_ok_count=0U; acquisition_adc_switch_fail_count=0U;
   acquisition_adc_rank1_status=UINT32_MAX; acquisition_adc_rank2_status=UINT32_MAX;
+  acquisition_fast_isr_active=0U; acquisition_fast_irq_last_cycles=0U;
+  acquisition_fast_irq_max_cycles=0U; acquisition_fast_irq_budget_cycles=0U;
+  acquisition_fast_phase_last_cycles=0U; acquisition_fast_phase_max_cycles=0U;
+  acquisition_fast_budget_fail_count=0U;
   ch1_preview_have_group=0U; ch1_preview_last_group=0U;
   ch1_frame_build_count=0U; ch1_uart_tx_count=0U; ch1_uart_tx_error_count=0U;
   ch1_uart_next_seq=0U; ch1_skipped_group_count=0U;

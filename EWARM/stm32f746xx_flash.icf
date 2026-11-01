@@ -39,3 +39,9 @@ place at address mem:0x20018000 { section .eth_dma };
 place in ROM_region   { readonly };
 place in CPU_region   { readwrite,
                         block CSTACK, block HEAP };
+/* GEAR3/GEAR4 fast ISR body: __ramfunc code (.textrw) is copied from flash
+ * into ITCM at startup so every ISR runs at 0 wait states, independent of
+ * the flash I-Cache state. Thresholds are unchanged; only fetch speed is.
+ * Same pattern as IAR's own config\linker\AnalogDevices\ADuCM4050.icf, which
+ * places section .textrw in the instruction RAM after the generic rules. */
+place in ITCMRAM_region { section .textrw };

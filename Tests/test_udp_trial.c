@@ -48,7 +48,8 @@ int UDP_TRIAL_TEST_MAIN(void)
   trial_setup(); configs=config_count; DAQ_UDPTrialPoll();
   CHECK(udp_trial.state==0U && config_count==configs && acquisition_active_gear==0U);
   CHECK(Acquisition_RequestGear(2U)==HAL_ERROR);
-  CHECK(DigitalSync_GetTimingConfig(2U)==NULL);
+  CHECK(DigitalSync_GetTimingConfig(2U)!=NULL &&
+      DigitalSync_GetTimingConfig(2U)->adc_sample_cycles==144U);
   CHECK(Acquisition_ApplyConfiguration(2U,144U)==HAL_ERROR);
   for(i=0U;i<5U;i++)
   {
@@ -90,7 +91,7 @@ int UDP_TRIAL_TEST_MAIN(void)
   memcpy(saved,frame,260U); snapshot.ch1[7]=65535U;
   CHECK(DAQ_BuildUDPGEAR2CandidateFrame(snapshot.ch1,snapshot.ch2,snapshot.dig,31U,0U,frame,260U)==DAQ_FRAME_ADC_OUT_OF_RANGE);
   CHECK(memcmp(saved,frame,260U)==0); snapshot.ch1[7]=0U;
-  CHECK(DAQ_BuildSelectedFrameForGear(snapshot.ch1,snapshot.ch2,snapshot.dig,2U,31U,0U,frame,260U)==DAQ_FRAME_BAD_ARGUMENT);
+  CHECK(DAQ_BuildSelectedFrameForGear(snapshot.ch1,snapshot.ch2,snapshot.dig,2U,31U,0U,frame,260U)==DAQ_FRAME_OK && frame[5]==2U);
   seq=ch1_uart_next_seq; uart_calls=transmitted;
   CHECK(CH1_FrameTransmitPoll()==1U && transmitted==uart_calls && ch1_uart_next_seq==seq);
   CHECK(ch1_frame_gear==2U && ch1_preview_work[5]==2U);

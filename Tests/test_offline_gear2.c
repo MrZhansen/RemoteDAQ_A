@@ -73,7 +73,7 @@ int OFFLINE_TEST_MAIN(void)
   uint32_t i,j,seq,starts,configs,group;
   const DigitalSyncTimingConfig *cfg=DigitalSync_GetOfflineTimingConfig();
   CHECK(cfg!=NULL && cfg->sample_interval_us==20U && cfg->max_phase_us==4U && cfg->max_body_us==4U);
-  CHECK(DigitalSync_GetTimingConfig(2U)==NULL && DigitalSync_GetTimingConfigForADC(2U,144U)==NULL);
+  CHECK(DigitalSync_GetTimingConfigForADC(2U,144U)==DigitalSync_GetTimingConfig(2U));
   CHECK(sizeof(offline_samples)==32U*sizeof(Full_Snapshot));
   off_setup(); CHECK(offline_request_groups==0U && offline.state==OFFLINE_IDLE);
   configs=config_count;

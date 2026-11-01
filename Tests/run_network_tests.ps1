@@ -23,7 +23,7 @@ if($start -lt 0 -or $end -lt 0) { throw 'Missing transport service' }
 [IO.File]::WriteAllText((Join-Path $OutputDirectory 'transport_under_test.inc'),$main.Substring($start,$end-$start))
 $legacy=Join-Path (Split-Path $OutputDirectory -Parent) 'host_network_baseline'
 $exe=Join-Path $OutputDirectory 'test_transport.exe'
-& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' '-I' (Join-Path $root 'Core/Inc') '-I' $OutputDirectory '-I' $legacy (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $PSScriptRoot 'test_transport.c') '-o' $exe 2>&1 | ForEach-Object { $_ }
+& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' '-I' (Join-Path $root 'Core/Inc') '-I' $OutputDirectory '-I' $legacy (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $root 'Core/Src/digital_sync.c') (Join-Path $PSScriptRoot 'test_transport.c') '-o' $exe 2>&1 | ForEach-Object { $_ }
 if($LASTEXITCODE -ne 0) { throw "Transport test compile failed: $LASTEXITCODE" }
 & $exe 2>&1 | ForEach-Object { $_ }
 if($LASTEXITCODE -ne 0) { throw "Transport tests failed: $LASTEXITCODE" }

@@ -25,7 +25,7 @@ foreach($scenario in @('new','bind','init','guard','lwip_assert','fault','health
 }
 }
 $handshake=Join-Path $OutputDirectory 'test_udp_handshake.exe'
-& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' '-I' (Join-Path $root 'Core/Inc') '-I' (Join-Path $FixtureRoot 'host_network') '-I' (Join-Path $FixtureRoot 'host_network_baseline') (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $PSScriptRoot 'test_udp_handshake.c') '-o' $handshake 2>&1 | ForEach-Object {$_}
+& $Compiler '-std=c11' '-O2' '-Wall' '-Wextra' '-Werror' '-pedantic' '-I' (Join-Path $root 'Core/Inc') '-I' (Join-Path $FixtureRoot 'host_network') '-I' (Join-Path $FixtureRoot 'host_network_baseline') (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $root 'Core/Src/digital_sync.c') (Join-Path $PSScriptRoot 'test_udp_handshake.c') '-o' $handshake 2>&1 | ForEach-Object {$_}
 if($LASTEXITCODE -ne 0) {throw "Handshake scheduling compile failed: $LASTEXITCODE"}
 & $handshake 2>&1 | ForEach-Object {$_}
 if($LASTEXITCODE -ne 0) {throw "Handshake scheduling test failed: $LASTEXITCODE"}

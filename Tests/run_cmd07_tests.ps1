@@ -38,7 +38,7 @@ $base=@('-std=c11','-O2','-Wall','-Wextra','-Werror','-pedantic','-I',(Join-Path
   '-I',$OutputDirectory,'-I',$FixtureRoot,'-I',(Join-Path $FixtureRoot 'host_network'),'-I',(Join-Path $FixtureRoot 'host_network_baseline'))
 foreach($suite in @('square_wave_control','cmd07')) {
   $exe=Join-Path $OutputDirectory ('test_'+$suite+'.exe')
-  & $Compiler @base (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $PSScriptRoot ('test_'+$suite+'.c')) '-o' $exe 2>&1 | ForEach-Object {$_}
+  & $Compiler @base (Join-Path $root 'Core/Src/daq_protocol.c') (Join-Path $root 'Core/Src/daq_control_stream.c') (Join-Path $root 'Core/Src/digital_sync.c') (Join-Path $PSScriptRoot ('test_'+$suite+'.c')) '-o' $exe 2>&1 | ForEach-Object {$_}
   if($LASTEXITCODE -ne 0){throw "Compile $suite failed: $LASTEXITCODE"}
   & $exe 2>&1 | ForEach-Object {$_}
   if($LASTEXITCODE -ne 0){throw "Test $suite failed: $LASTEXITCODE"}

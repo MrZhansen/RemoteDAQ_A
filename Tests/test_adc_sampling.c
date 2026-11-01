@@ -34,8 +34,10 @@ int main(void)
   CHECK(fast!=NULL && fast->sample_interval_us==200U && fast->max_phase_us==4U);
   CHECK(fast->max_body_us==20U);
   CHECK(DigitalSync_GetTimingConfigForADC(1U,144U)==NULL);
-  CHECK(DigitalSync_GetTimingConfigForADC(2U,144U)==NULL);
+  CHECK(DigitalSync_GetTimingConfigForADC(2U,144U)==DigitalSync_GetTimingConfig(2U));
   CHECK(DigitalSync_GetTimingConfigForADC(2U,480U)==NULL);
+  CHECK(DigitalSync_GetTimingConfigForADC(3U,28U)==DigitalSync_GetTimingConfig(3U));
+  CHECK(DigitalSync_GetTimingConfigForADC(4U,3U)==DigitalSync_GetTimingConfig(4U));
   CHECK(DigitalSync_GetTimingConfigForADC(0U,480U)==DigitalSync_GetTimingConfig(0U));
   CHECK(DigitalSync_GetTimingConfigForADC(1U,480U)==DigitalSync_GetTimingConfig(1U));
   setup();
@@ -110,6 +112,7 @@ int main(void)
     check_adc_mode(480U);
   }
   CHECK(Acquisition_RequestGear(2U)==HAL_ERROR);
+  CHECK(acquisition_last_switch_result==ACQ_SWITCH_UDP_REQUIRED && adc_config_count==before);
   CHECK(Acquisition_ApplyConfiguration(2U,144U)==HAL_ERROR && adc_config_count==before);
   /* The short check accepts CNT 4 and rejects 5; point/trigger tests stay strict. */
   for(i=0U;i<3U;i++)

@@ -32,9 +32,12 @@ timerclk = pclk1*2
 check((hclk,pclk1,pclk2,adcclk,timerclk) == (216000000,54000000,108000000,27000000,108000000), "nominal clocks")
 check("htim2.Init.Prescaler = timer_clock / 1000000U - 1U;" in main and "htim2.Init.Period = timing->sample_interval_us - 1U;" in main, "timer arithmetic")
 check("RCC_DCKCFGR1_TIMPRE" in main, "TIMPRE verified before candidate entry")
-check("candidate = {20U, 4U, 4U}" in sync, "candidate isolated deadlines")
-check("{200U, DIGITAL_SYNC_MAX_PHASE_US, DIGITAL_SYNC_MAX_BODY_US}" in sync and "{100U, DIGITAL_SYNC_MAX_PHASE_US, DIGITAL_SYNC_MAX_BODY_US}" in sync, "production profiles unchanged")
-check("if (gear > 1U)" in main, "ordinary request still refuses GEAR2")
+check("static const DigitalSyncTimingConfig timing_profiles[]" in sync, "single gear table")
+check("{ 20U,  4U,  4U, 144U,  864U,  864U, 0U, 1U}" in sync, "GEAR2 row")
+check("{ 10U,  2U,  4U,  28U,  540U,  972U, 1U, 1U}" in sync, "GEAR3 row")
+check("{  2U,  1U,  1U,   3U,  216U,  390U, 1U, 1U}" in sync, "GEAR4 row")
+check("if (gear >= ACQ_GEAR_COUNT)" in main, "unknown gears rejected")
+check("(gear >= 2U) && (acquisition_udp_gear2_available == 0U)" in main, "UDP-only gate")
 check("((200U - ndtr) / 2U) != index" in sync, "NDTR criterion unchanged")
 for index in range(100):
     check((200-(200-2*index))//2 == index, "before rank1")
@@ -43,10 +46,10 @@ for index in range(100):
 check("compiler prologue/epilogue" in irq and "accounting record's own update is outside" in irq, "ISR measurement boundary is explicit")
 adc_latency = fractions.Fraction(2,adcclk) + fractions.Fraction(1,pclk2)
 rows = []
-for gear, period in ((0,200),(1,100),(2,20)):
+gear_rows=((0,200,480),(1,100,480),(2,20,144),(3,10,28),(4,2,3))
+for gear, period, cycles in gear_rows:
     arr = period-1
     check(fractions.Fraction((107+1)*(arr+1)*1000000,timerclk) == period, "TIM2 period")
-    cycles = 144 if gear == 2 else 480
     pair = fractions.Fraction(2*(cycles+12)*1000000,adcclk)
     including_latency = pair + adc_latency*1000000
     check(including_latency < period, "nominal pair fits")
@@ -62,7 +65,7 @@ result = {
  "source": "HSI nominal 16MHz; HAL_GetFreq reports configured frequency, not measured oscillator accuracy",
  "clocks_hz": {"hsi":hsi,"hclk":int(hclk),"pclk1":int(pclk1),"pclk2":int(pclk2),"adc":int(adcclk),"tim2":int(timerclk)},
  "profiles":rows,"regular_external_trigger_latency_us":float(adc_latency*1000000),
- "candidate_body_limit_cycles":int(hclk/1000000*4),"candidate_period_cycles":int(hclk/1000000*20),
+  "gear_budget_cycles":{"2_phase":864,"2_body":864,"3_phase":540,"3_body_exclusive":972,"4_phase":216,"4_body_exclusive":390},
  "CNT_4_upper_us_exclusive":response_upper,
  "uart_frame_ms":uart_ms,"wire_100M_us":326*8/100,"wire_10M_us":326*8/10,
  "assumptions":["12-bit ADC 12-cycle conversion; RM0385/table62 external-trigger latency model",

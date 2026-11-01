@@ -106,9 +106,11 @@ HAL_StatusTypeDef Analog_GetSnapshot(Analog_Snapshot *snapshot);
 HAL_StatusTypeDef Full_GetSnapshot(Full_Snapshot *snapshot);
 extern volatile DigitalSyncTimingDiagnostics digital_timing;
 extern volatile uint32_t acquisition_active_gear;
+extern volatile uint32_t acquisition_fast_isr_active;
 void Acquisition_TIM2Update(uint32_t irq_entry_phase);
+void Acquisition_TIM2FastUpdate(uint32_t irq_entry_cycles, uint32_t entry_ndtr);
 /* Main-context request only; execution occurs in the acquisition service.
- * GEAR 0/1 on either transport; GEAR2 only under the live UDP policy.
+ * GEAR 0/1 on either transport; GEAR2..4 only under the live UDP policy.
  * This is not a UART command receiver. */
 HAL_StatusTypeDef Acquisition_RequestGear(uint32_t gear);
 /* Main-context request: 480 for normal mode; 144 only while GEAR0 is active

@@ -102,6 +102,13 @@ static void read_hook(uint32_t i);
 #else
 static volatile uint32_t acquisition_active_gear = 0U;
 static volatile uint32_t full_group_publish_count;
+static volatile uint32_t acquisition_fast_isr_active;
+static volatile uint32_t acquisition_fast_irq_last_cycles;
+static volatile uint32_t acquisition_fast_irq_max_cycles;
+static volatile uint32_t acquisition_fast_irq_budget_cycles;
+static volatile uint32_t acquisition_fast_phase_last_cycles;
+static volatile uint32_t acquisition_fast_phase_max_cycles;
+static volatile uint32_t acquisition_fast_budget_fail_count;
 #endif
 #include "full_sync_state.inc"
 #include "full_sync_under_test.inc"
@@ -122,6 +129,10 @@ static void reset_model(void)
   memset((void *)&digital_timing, 0, sizeof(digital_timing));
   timing_phase_count=0U; timing_phase_pos=0U; timing_cycle_count=0U; timing_cycle_pos=0U;
   fake_dwt.CYCCNT=0U; digital_irq_max_cycles=0U; digital_read_phase_max_us=0U;
+  acquisition_fast_isr_active=0U; acquisition_fast_irq_last_cycles=0U;
+  acquisition_fast_irq_max_cycles=0U; acquisition_fast_irq_budget_cycles=0U;
+  acquisition_fast_phase_last_cycles=0U; acquisition_fast_phase_max_cycles=0U;
+  acquisition_fast_budget_fail_count=0U;
   fake_dma2.LISR=0U; dma2_stream0_irq_count=0U; dma2_stream0_last_lisr=0U; timing_publish_cost=0U;
   adc_half_callback_count=0U; adc_full_callback_count=0U;
   full_snapshot_seq = 0U; full_snapshot_valid = 0U;
@@ -269,12 +280,25 @@ int main(void)
   {
     const DigitalSyncTimingConfig *p0=DigitalSync_GetTimingConfig(0U);
     const DigitalSyncTimingConfig *p1=DigitalSync_GetTimingConfig(1U);
+    const DigitalSyncTimingConfig *p2=DigitalSync_GetTimingConfig(2U);
+    const DigitalSyncTimingConfig *p3=DigitalSync_GetTimingConfig(3U);
+    const DigitalSyncTimingConfig *p4=DigitalSync_GetTimingConfig(4U);
     DigitalSync state;
     CHECK(p0!=NULL && p0->sample_interval_us==200U);
     CHECK(p1!=NULL && p1->sample_interval_us==100U);
     CHECK(p0->max_phase_us==20U && p1->max_phase_us==20U);
     CHECK(p0->max_body_us==20U && p1->max_body_us==20U);
-    CHECK(DigitalSync_GetTimingConfig(2U)==NULL && DigitalSync_GetTimingConfig(UINT32_MAX)==NULL);
+    CHECK(p2!=NULL && p2->sample_interval_us==20U && p2->adc_sample_cycles==144U);
+    CHECK(p2->max_phase_us==4U && p2->max_body_us==4U && p2->fast_isr==0U && p2->udp_required==1U);
+    CHECK(p3!=NULL && p3->sample_interval_us==10U && p3->adc_sample_cycles==28U);
+    CHECK(p3->max_phase_cycles==540U && p3->max_body_cycles==972U && p3->fast_isr==1U);
+    CHECK(p4!=NULL && p4->sample_interval_us==2U && p4->adc_sample_cycles==3U);
+    CHECK(p4->max_phase_cycles==216U && p4->max_body_cycles==390U && p4->fast_isr==1U);
+    CHECK(DigitalSync_GetTimingConfig(UINT32_MAX)==NULL);
+    CHECK(DigitalSync_GetTimingConfigForADC(2U,144U)==p2);
+    CHECK(DigitalSync_GetTimingConfigForADC(3U,28U)==p3);
+    CHECK(DigitalSync_GetTimingConfigForADC(4U,3U)==p4);
+    CHECK(DigitalSync_GetTimingConfigForADC(3U,3U)==NULL);
     for(i=0U;i<2U;i++)
     {
       DigitalSync_Init(&state); state.timing=*DigitalSync_GetTimingConfig(i);
@@ -294,6 +318,30 @@ int main(void)
     CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_TRIGGER);
     DigitalSync_Init(&state); CHECK(DigitalSync_Record(&state,1U,200U,1U,8U)==0U);
     CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_BITS);
+    /* Fast-path record keeps the same trigger/NDTR/bits alignment contract,
+     * but checks DWT-cycle phase and publishes the same 50-point halves. */
+    DigitalSync_Init(&state); state.timing=*p3;
+    CHECK(DigitalSync_RecordFast(&state,1U,200U,540U,7U)==1U);
+    CHECK(DigitalSync_RecordFast(&state,2U,197U,12U,0U)==1U);
+    CHECK(state.last_phase_cycles==12U && state.next_index==2U && state.sample_count==2U);
+    CHECK(DigitalSync_RecordFast(&state,3U,196U,541U,0U)==0U);
+    CHECK(state.error==DIGITAL_SYNC_ERROR_LATE && state.fault_detail==DIGITAL_SYNC_DETAIL_PHASE);
+    DigitalSync_Init(&state); state.timing=*p4;
+    CHECK(DigitalSync_RecordFast(&state,1U,200U,216U,7U)==1U);
+    CHECK(DigitalSync_RecordFast(&state,3U,197U,1U,0U)==0U);
+    CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_TRIGGER);
+    DigitalSync_Init(&state); state.timing=*p4;
+    CHECK(DigitalSync_RecordFast(&state,1U,198U,1U,0U)==0U);
+    CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_NDTR_INDEX);
+    DigitalSync_Init(&state); state.timing=*p4;
+    CHECK(DigitalSync_RecordFast(&state,1U,0U,1U,0U)==0U);
+    CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_NDTR_RANGE);
+    DigitalSync_Init(&state); state.timing=*p4;
+    CHECK(DigitalSync_RecordFast(&state,1U,200U,1U,8U)==0U);
+    CHECK(state.fault_detail==DIGITAL_SYNC_DETAIL_BITS);
+    DigitalSync_Init(&state); state.timing=*p4;
+    state.last_trigger=UINT32_MAX;
+    CHECK(DigitalSync_RecordFast(&state,0U,200U,1U,0U)==1U);
   }
   /* Scripted timestamps validate accounting only, not measured MCU timings. */
   reset_model();

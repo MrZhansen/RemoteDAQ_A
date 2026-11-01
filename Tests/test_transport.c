@@ -5,6 +5,7 @@
 #include "offline_uart_under_test.inc"
 #include "daq_network.h"
 #include "daq_udp_trial.h"
+#include "digital_sync.h"
 volatile DAQ_UDPTrialDiagnostics udp_trial;
 #include "transport_state.inc"
 static uint32_t net_enable=0U, net_ready=1U, net_enable_result=1U;
@@ -53,6 +54,7 @@ static void Request(uint32_t cmd,uint32_t parameter)
 int TRANSPORT_TEST_MAIN(void)
 {
   uint32_t calls,seq,errors;
+  daq_transport_request=0U; daq_transport_active=0U; daq_transport_result=0U;
   reset_control();
   CHECK(daq_transport_active==0U && daq_transport_request==0U);
   CHECK(DAQ_TransportPoll()==0U && net_enable==0U && uart6_rx_active==1U);
@@ -85,7 +87,10 @@ int TRANSPORT_TEST_MAIN(void)
   Acquisition_GearPoll(); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==1U && udp_last[3]==1U && udp_status==calls+1U);
   Request(1U,3U); (void)DAQ_TransportPoll();
-  CHECK(acquisition_active_gear==1U && uart6_gear_unsupported_count>0U);
+  CHECK(acquisition_active_gear==1U && acquisition_request_pending==1U);
+  Acquisition_GearPoll(); (void)DAQ_TransportPoll();
+  CHECK(acquisition_active_gear==3U && acquisition_adc_active_cycles==28U);
+  CHECK(udp_last[2]==3U && udp_last[3]==3U);
   Request(1U,0U); (void)DAQ_TransportPoll(); Acquisition_GearPoll(); (void)DAQ_TransportPoll();
   CHECK(acquisition_active_gear==0U);
   /* Keep exercising the isolated candidate owner separately from remote G2. */

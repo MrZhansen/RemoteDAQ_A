@@ -299,6 +299,15 @@ void TIM2_IRQHandler(void)
       ((TIM2->DIER & TIM_DIER_UIE) != 0U))
   {
     TIM2->SR = (uint32_t)~TIM_SR_UIF; /* rc_w0: clear UIF only. */
+    if (acquisition_fast_isr_active != 0U)
+    {
+      /* Read the DMA write pointer at ISR entry. At GEAR4 the ADC pair
+       * completes 1.11 us after the trigger (27 MHz ADCCLK, 2x15 cycles);
+       * sampling NDTR here keeps it inside that window with ~1 us to spare
+       * instead of ~0.4 us. Checks and cycle thresholds are unchanged. */
+      Acquisition_TIM2FastUpdate(start, hdma_adc3.Instance->NDTR);
+      return; /* Fast gears own their cycle-budget diagnostics. */
+    }
     Acquisition_TIM2Update(entry_phase);
   }
   else { flags |= DIGITAL_TIMING_EMPTY; }
