@@ -448,6 +448,31 @@ volatile uint32_t daq_udp_status_error_count = 0U;
 volatile uint32_t daq_udp_last_seq = 0U;
 volatile uint32_t daq_udp_last_group = 0U;
 static uint8_t daq_udp_status_frame[DAQ_STATUS_FRAME_SIZE];
+/* GEAR4 UDP throughput diagnostics: where the per-frame ~570 us goes.
+ * Pure observation; no control path reads these values. */
+volatile uint32_t daq_tx_build_last_cycles = 0U;
+volatile uint32_t daq_tx_build_max_cycles = 0U;
+volatile uint32_t daq_tx_net_last_cycles = 0U;
+volatile uint32_t daq_tx_net_max_cycles = 0U;
+volatile uint32_t daq_tx_frame_period_cycles = 0U;
+volatile uint32_t daq_tx_frame_period_min_cycles = 0xFFFFFFFFUL;
+volatile uint32_t daq_crc_bench_cycles = 0U;
+volatile uint32_t daq_eth_maccr = 0U;
+static uint32_t daq_tx_prev_cycle = 0U;
+/* End-to-end send-rate evidence, computed inside the firmware so a stale
+ * Live Watch display cannot distort the result. */
+volatile uint32_t daq_tx_fps = 0U;
+volatile uint32_t daq_tx_group_delta_last = 0U;
+volatile uint32_t daq_tx_group_delta_max = 0U;
+static uint32_t daq_tx_fps_count = 0U;
+static uint32_t daq_tx_fps_start_cycle = 0U;
+static uint32_t daq_tx_prev_group = 0U;
+/* Main-loop cost split for the GEAR4 send-rate investigation. */
+volatile uint32_t daq_loop_period_cycles = 0U;
+volatile uint32_t daq_loop_period_min_cycles = 0xFFFFFFFFUL;
+volatile uint32_t daq_transportpoll_cycles = 0U;
+volatile uint32_t daq_transportpoll_max_cycles = 0U;
+static uint32_t daq_loop_prev_cycle = 0U;
 
 /* USER CODE END PV */
 
@@ -1665,6 +1690,9 @@ static void Acquisition_UDPPolicyPoll(void)
       (adc_running != 0U) && (acquisition_fault_latched == 0U) &&
       (adc_error == 0U) && (adc_hal_error == 0U) && (dma_error == 0U) &&
       (digital_sync.error == 0U)) ? 1U : 0U;
+  /* Link-mode evidence for the GEAR4 throughput review (FES bit14 = 100 Mb,
+   * DM bit11 = full duplex). Observation only. */
+  daq_eth_maccr = ETH->MACCR;
   if ((available != 0U) && (acquisition_requested_gear >= 2U) &&
       (acquisition_requested_gear < ACQ_GEAR_COUNT) &&
       (acquisition_udp_gear2_active == 0U))
@@ -2350,14 +2378,56 @@ static uint32_t DAQ_TransportPoll(void)
             (adc_group_count != ch1_preview_last_group)))
   {
     uint16_t sequence = ch1_uart_next_seq;
+    uint32_t build_start = DWT->CYCCNT;
     if (Analog_BuildFramePreview(sequence, 2U) != 0U)
     {
-      if (DAQ_NetSendFrame(ch1_preview_work, DAQ_DATA_FRAME_SIZE) != 0U)
       {
-        daq_udp_last_seq = sequence; daq_udp_last_group = ch1_frame_group;
-        ch1_uart_next_seq = (uint16_t)((uint32_t)sequence + 1U);
+        uint32_t build_cycles = DWT->CYCCNT - build_start;
+        uint32_t net_start;
+        daq_tx_build_last_cycles = build_cycles;
+        if (build_cycles > daq_tx_build_max_cycles)
+        { daq_tx_build_max_cycles = build_cycles; }
+        net_start = DWT->CYCCNT;
+        if (DAQ_NetSendFrame(ch1_preview_work, DAQ_DATA_FRAME_SIZE) != 0U)
+        {
+          uint32_t net_end = DWT->CYCCNT;
+          uint32_t net_cycles = net_end - net_start;
+          daq_tx_net_last_cycles = net_cycles;
+          if (net_cycles > daq_tx_net_max_cycles)
+          { daq_tx_net_max_cycles = net_cycles; }
+          if (daq_tx_prev_cycle != 0U)
+          {
+            uint32_t period = net_end - daq_tx_prev_cycle;
+            daq_tx_frame_period_cycles = period;
+            if (period < daq_tx_frame_period_min_cycles)
+            { daq_tx_frame_period_min_cycles = period; }
+          }
+          daq_tx_prev_cycle = net_end;
+          if (daq_tx_fps_start_cycle == 0U) { daq_tx_fps_start_cycle = net_end; }
+          daq_tx_fps_count++;
+          {
+            uint32_t window = net_end - daq_tx_fps_start_cycle;
+            uint32_t window_ms = window / 216000UL;
+            if (window_ms >= 1000U)
+            {
+              daq_tx_fps = (daq_tx_fps_count * 1000UL) / window_ms;
+              daq_tx_fps_count = 0U;
+              daq_tx_fps_start_cycle = net_end;
+            }
+          }
+          if (daq_tx_prev_group != 0U)
+          {
+            uint32_t group_delta = ch1_frame_group - daq_tx_prev_group;
+            daq_tx_group_delta_last = group_delta;
+            if (group_delta > daq_tx_group_delta_max)
+            { daq_tx_group_delta_max = group_delta; }
+          }
+          daq_tx_prev_group = ch1_frame_group;
+          daq_udp_last_seq = sequence; daq_udp_last_group = ch1_frame_group;
+          ch1_uart_next_seq = (uint16_t)((uint32_t)sequence + 1U);
+        }
+        else { daq_udp_data_error_count++; }
       }
-      else { daq_udp_data_error_count++; }
     }
     work = 1U;
   }
@@ -2458,6 +2528,9 @@ int main(void)
     /* USER CODE BEGIN 3 */
     /* No per-sample software trigger; TIM2 and DMA run independently. */
     uint32_t primask;
+    uint32_t loop_start = DWT->CYCCNT;
+    uint32_t transport_work;
+    uint32_t transport_start;
     if (Acquisition_OfflinePoll() != 0U)
     {
       /* Offline owns acquisition and suppresses ALL production UART service.
@@ -2484,7 +2557,23 @@ int main(void)
     Acquisition_UDPPolicyPoll();
     Acquisition_GearPoll();
     CH1_BackgroundPoll();
-    if ((DAQ_TransportPoll() == 0U) &&
+    transport_start = DWT->CYCCNT;
+    transport_work = DAQ_TransportPoll();
+    daq_transportpoll_cycles = DWT->CYCCNT - transport_start;
+    {
+      uint32_t poll_cycles = daq_transportpoll_cycles;
+      if (poll_cycles > daq_transportpoll_max_cycles)
+      { daq_transportpoll_max_cycles = poll_cycles; }
+    }
+    if (daq_loop_prev_cycle != 0U)
+    {
+      uint32_t loop_period = loop_start - daq_loop_prev_cycle;
+      daq_loop_period_cycles = loop_period;
+      if (loop_period < daq_loop_period_min_cycles)
+      { daq_loop_period_min_cycles = loop_period; }
+    }
+    daq_loop_prev_cycle = loop_start;
+    if ((transport_work == 0U) &&
         ((daq_transport_active != 0U) || (UART6_ServicePoll() == 0U)))
     {
       /* SysTick (1 ms) bounds the check-to-sleep race; DMA also wakes us.
@@ -2975,6 +3064,20 @@ static void CH1_SamplingStart(void)
   DWT->LAR = 0xC5ACCE55UL;
   DWT->CYCCNT = 0U;
   DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+  /* GEAR4 throughput diagnostic: cost of the 258-byte bitwise CRC that every
+   * data frame pays. Best of 100 runs, observation only. */
+  {
+    uint32_t n;
+    uint32_t best = 0xFFFFFFFFUL;
+    for (n = 0U; n < 100U; n++)
+    {
+      uint32_t crc_start = DWT->CYCCNT;
+      (void)DAQ_CRC16_CCITT_FALSE(ch1_preview_work, DAQ_DATA_FRAME_SIZE - 2U);
+      crc_start = DWT->CYCCNT - crc_start;
+      if (crc_start < best) { best = crc_start; }
+    }
+    daq_crc_bench_cycles = best;
+  }
   (void)Acquisition_ApplyGear(0U); /* Power-on default; not a switch count. */
 }
 
